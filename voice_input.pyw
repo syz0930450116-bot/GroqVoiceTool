@@ -28,7 +28,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v1.4.2"
+CURRENT_VERSION = "v1.5.0"
 GITHUB_RELEASE_URL = "https://api.github.com/repos/syz0930450116-bot/GroqVoiceTool/releases/latest"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
@@ -37,14 +37,16 @@ CONFIG_FILE = os.path.join(APPDATA_DIR, "config.json")
 SAMPLE_RATE = 16000
 
 HOTKEY_IDS = {
-    2: ("en", 0x0001 | 0x0004, 0x53),      # ID 2: Alt + Shift + S (中譯英)
-    4: ("replace", 0x0001 | 0x0004, 0x43), # ID 4: Alt + Shift + C (劃詞替換)
-    7: ("quit", 0x0001 | 0x0004, 0x51),    # ID 7: Alt + Shift + Q (退出)
     1: ("zh", 0x0001, 0x53),               # ID 1: Alt + S (繁體中文)
+    2: ("en", 0x0001 | 0x0004, 0x53),      # ID 2: Alt + Shift + S (中譯英)
     3: ("trans", 0x0001, 0x43),            # ID 3: Alt + C (劃詞翻譯)
+    4: ("replace", 0x0001 | 0x0004, 0x43), # ID 4: Alt + Shift + C (劃詞替換)
     5: ("ai", 0x0001, 0x41),               # ID 5: Alt + A (AI 潤飾)
     6: ("help", 0x0001, 0x48),             # ID 6: Alt + H (說明卡)
-    8: ("ocr", 0x0001, 0x58)               # ID 8: Alt + X (截圖翻譯)
+    7: ("quit", 0x0001 | 0x0004, 0x51),    # ID 7: Alt + Shift + Q (退出)
+    8: ("ocr", 0x0001, 0x58),              # ID 8: Alt + X (截圖翻譯)
+    9: ("custom_1", 0x0001, 0x31),         # ID 9: Alt + 1 (自訂指令 1)
+    10: ("custom_2", 0x0001, 0x32)         # ID 10: Alt + 2 (自訂指令 2)
 }
 
 # ----------------- 自動更新模組 -----------------
@@ -87,6 +89,9 @@ def save_config(cfg):
 
 config = load_config()
 GROQ_API_KEY = config.get("groq_api_key", "")
+CUSTOM_PROMPT_1 = config.get("custom_prompt_1", "請幫我將這段文字翻譯為專業的商用日文。")
+CUSTOM_PROMPT_2 = config.get("custom_prompt_2", "請幫我把這段草稿改寫成委婉客氣的正式信件語氣。")
+
 recording = False
 is_processing = False
 audio_data = []
@@ -143,49 +148,73 @@ def exit_program():
     os._exit(0)
 
 def prompt_api_key_gui():
-    global GROQ_API_KEY
+    global GROQ_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2
     win = tk.Toplevel(root)
-    win.title("設定 Groq API Key")
+    win.title("設定中心 (API & 自訂指令)")
     win.attributes("-topmost", True)
-    win.geometry(f"400x200+{(root.winfo_screenwidth()-400)//2}+{(root.winfo_screenheight()-200)//2}")
+    win.geometry(f"460x360+{(root.winfo_screenwidth()-460)//2}+{(root.winfo_screenheight()-360)//2}")
     win.configure(bg="#21252B")
 
-    tk.Label(win, text="🔑 歡迎使用 AI 語音助理", font=("Microsoft JhengHei", 12, "bold"), fg="#61AFEF", bg="#21252B").pack(pady=(15, 5))
-    tk.Label(win, text="請輸入您的 Groq API Key：", font=("Microsoft JhengHei", 9), fg="#ABB2BF", bg="#21252B").pack()
+    tk.Label(win, text="⚙️ 系統設定中心", font=("Microsoft JhengHei", 12, "bold"), fg="#61AFEF", bg="#21252B").pack(pady=(15, 5))
+    
+    # API Key 設定
+    tk.Label(win, text="🔑 Groq API Key：", font=("Microsoft JhengHei", 9), fg="#ABB2BF", bg="#21252B").pack(anchor="w", padx=30)
+    entry_api = tk.Entry(win, width=50, font=("Consolas", 10), show="*")
+    entry_api.pack(pady=(0, 10))
+    if GROQ_API_KEY: entry_api.insert(0, GROQ_API_KEY)
 
-    entry = tk.Entry(win, width=45, font=("Consolas", 10), show="*")
-    entry.pack(pady=10)
-    if GROQ_API_KEY: entry.insert(0, GROQ_API_KEY)
+    # 自訂指令 1
+    tk.Label(win, text="自訂指令 1 (Alt + 1 觸發)：", font=("Microsoft JhengHei", 9), fg="#98C379", bg="#21252B").pack(anchor="w", padx=30)
+    entry_p1 = tk.Entry(win, width=50, font=("Microsoft JhengHei", 10))
+    entry_p1.pack(pady=(0, 10))
+    entry_p1.insert(0, CUSTOM_PROMPT_1)
+
+    # 自訂指令 2
+    tk.Label(win, text="自訂指令 2 (Alt + 2 觸發)：", font=("Microsoft JhengHei", 9), fg="#E5C07B", bg="#21252B").pack(anchor="w", padx=30)
+    entry_p2 = tk.Entry(win, width=50, font=("Microsoft JhengHei", 10))
+    entry_p2.pack(pady=(0, 15))
+    entry_p2.insert(0, CUSTOM_PROMPT_2)
 
     def save():
-        global GROQ_API_KEY
-        key = entry.get().strip()
+        global GROQ_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2
+        key = entry_api.get().strip()
+        p1 = entry_p1.get().strip()
+        p2 = entry_p2.get().strip()
+        
         if key:
             GROQ_API_KEY = key
-            save_config({"groq_api_key": key})
-            messagebox.showinfo("成功", "API Key 已儲存！", parent=win)
+            CUSTOM_PROMPT_1 = p1
+            CUSTOM_PROMPT_2 = p2
+            save_config({
+                "groq_api_key": key,
+                "custom_prompt_1": p1,
+                "custom_prompt_2": p2
+            })
+            messagebox.showinfo("成功", "設定已儲存！", parent=win)
             win.destroy()
 
-    tk.Button(win, text="儲存並開始使用", command=save, bg="#98C379", fg="#21252B", font=("Microsoft JhengHei", 9, "bold"), relief="flat", padx=10, pady=4).pack(pady=5)
+    tk.Button(win, text="儲存並關閉", command=save, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", 10, "bold"), relief="flat", padx=15, pady=5).pack(pady=5)
 
 def show_help_card_gui():
     win = tk.Toplevel(root)
     win.title("Groq AI 語音與文字助理 - 使用指南")
     win.attributes("-topmost", True)
     win.configure(bg="#1E1E1E")
-    win.geometry(f"480x480+{(root.winfo_screenwidth() - 480) // 2}+{(root.winfo_screenheight() - 480) // 2}")
+    win.geometry(f"500x520+{(root.winfo_screenwidth() - 500) // 2}+{(root.winfo_screenheight() - 520) // 2}")
 
     tk.Label(win, text=f"🎙️ Groq AI 語音與文字工具 ({CURRENT_VERSION})", font=("Microsoft JhengHei", 13, "bold"), fg="#61AFEF", bg="#1E1E1E").pack(pady=(12, 5))
     card_frame = tk.Frame(win, bg="#252526", bd=1, relief="solid")
     card_frame.pack(fill="both", expand=True, padx=15, pady=5)
 
     features = [
-        ("【 Alt + S 】", "🎙️ 語音打字 (繁中)", "對麥克風說話自動轉為繁體中文貼出。"),
+        ("【 Alt + S 】", "🎙️ 語音打字 (繁中)", "對麥克風說話自動轉為繁中貼出。"),
         ("【 Alt+Shift+S 】", "🔠 語音中譯英", "口述中文自動翻譯成英文貼出。"),
         ("【 Alt + C 】", "🔍 劃詞翻譯", "選取外文按快捷鍵彈窗翻譯。"),
-        ("【 Alt+Shift+C 】", "✏️ 原位替換", "選取外文/簡體字，直接用繁中在原處取代。"),
-        ("【 Alt + X 】", "🖼️ 截圖翻譯", "滑鼠拖曳框選畫面，自動辨識圖片文字並翻譯。"),
+        ("【 Alt+Shift+C 】", "✏️ 原位替換", "選取外文，直接用繁中在原處取代。"),
+        ("【 Alt + X 】", "🖼️ 截圖翻譯", "拖曳框選畫面，自動辨識圖片文字並翻譯。"),
         ("【 Alt + A 】", "✨ AI 潤飾", "選取草稿，AI 自動精修或摘要。"),
+        ("【 Alt + 1 】", "⚙️ 自訂指令 1", f"套用設定中心的指令 1 處理文字。"),
+        ("【 Alt + 2 】", "⚙️ 自訂指令 2", f"套用設定中心的指令 2 處理文字。"),
         ("【 Alt+Shift+Q 】", "👋 退出程式", "安全關閉後台程式。")
     ]
 
@@ -210,7 +239,7 @@ def show_help_card_gui():
 
     btn_frame = tk.Frame(win, bg="#1E1E1E")
     btn_frame.pack(fill="x", pady=10, padx=15)
-    tk.Button(btn_frame, text="修改 API Key", command=prompt_api_key_gui, bg="#E5C07B", fg="#1E1E1E", font=("Microsoft JhengHei", 9, "bold")).pack(side="left")
+    tk.Button(btn_frame, text="設定中心 (API & 指令)", command=prompt_api_key_gui, bg="#E5C07B", fg="#1E1E1E", font=("Microsoft JhengHei", 9, "bold")).pack(side="left")
     tk.Button(btn_frame, text="關閉 (Esc)", command=win.destroy, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", 9, "bold")).pack(side="right")
     win.bind("<Escape>", lambda e: win.destroy())
 
@@ -251,22 +280,16 @@ class SnippingTool:
         self.snip_win.attributes("-alpha", 0.3)
         self.snip_win.attributes("-topmost", True)
         self.snip_win.config(cursor="cross")
-
         self.canvas = tk.Canvas(self.snip_win, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-
-        self.start_x = None
-        self.start_y = None
-        self.rect = None
-
+        self.start_x = self.start_y = self.rect = None
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.snip_win.bind("<Escape>", lambda e: self.snip_win.destroy())
 
     def on_press(self, event):
-        self.start_x = event.x
-        self.start_y = event.y
+        self.start_x, self.start_y = event.x, event.y
         self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="red", width=2, fill="white")
 
     def on_drag(self, event):
@@ -316,8 +339,7 @@ def process_screenshot(x1, y1, x2, y2):
 
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
         if resp.status_code == 200:
-            ai_result = resp.json()["choices"][0]["message"]["content"].strip()
-            ai_result = to_tw_trad(ai_result)
+            ai_result = to_tw_trad(resp.json()["choices"][0]["message"]["content"].strip())
             show_ai_window("截圖 OCR 翻譯", "（圖片截取區域）", ai_result)
         else:
             show_ai_window("辨識失敗", "Vision API 錯誤", resp.text)
@@ -396,6 +418,8 @@ def process_selection(task_type):
     try:
         if task_type == "replace": set_status("⚡ 劃詞替換中...", "#61AFEF")
         elif task_type == "translate": set_status("⚡ 劃詞翻譯中...", "#98C379")
+        elif task_type == "custom_1": set_status("⚡ 執行指令 1...", "#C678DD")
+        elif task_type == "custom_2": set_status("⚡ 執行指令 2...", "#D19A66")
         else: set_status("⚡ AI 潤飾中...", "#E06C75")
             
         pyperclip.copy("")
@@ -409,8 +433,15 @@ def process_selection(task_type):
             return
 
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        
+        # 決定 System Prompt
         sys_prompt = "你是一個精通多國語言的專業翻譯員。將輸入文字精準翻譯為符合台灣用語習慣的繁體中文。只需輸出翻譯結果。"
-        if task_type == "ai_refine": sys_prompt = "你是一個高效率的 AI 文字助理。判斷輸入文字：長篇請整理3個重點摘要；短句草稿請潤飾為專業客氣的繁體中文。只需直接輸出結果。"
+        if task_type == "ai_refine": 
+            sys_prompt = "你是一個高效率的 AI 文字助理。判斷輸入文字：長篇請整理3個重點摘要；短句草稿請潤飾為專業客氣的繁體中文。只需直接輸出結果。"
+        elif task_type == "custom_1":
+            sys_prompt = f"嚴格遵循以下指令處理文字，且一律使用繁體中文輸出結果：{CUSTOM_PROMPT_1}。直接給予最終結果，不要任何問候語或解釋。"
+        elif task_type == "custom_2":
+            sys_prompt = f"嚴格遵循以下指令處理文字，且一律使用繁體中文輸出結果：{CUSTOM_PROMPT_2}。直接給予最終結果，不要任何問候語或解釋。"
 
         payload = {"model": "openai/gpt-oss-20b", "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": selected_text}], "temperature": 0.3}
         response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=8)
@@ -423,6 +454,8 @@ def process_selection(task_type):
                 send_paste()
             elif task_type == "translate": show_ai_window("Groq AI 劃詞翻譯", selected_text, ai_result)
             elif task_type == "ai_refine": show_ai_window("Groq AI 精修 / 摘要", selected_text, ai_result)
+            elif task_type == "custom_1": show_ai_window("✨ 自訂指令 1 處理結果", selected_text, ai_result)
+            elif task_type == "custom_2": show_ai_window("✨ 自訂指令 2 處理結果", selected_text, ai_result)
         else: show_ai_window("AI 處理失敗", selected_text, f"請求失敗 ({response.status_code})")
     finally:
         is_processing = False
@@ -468,6 +501,8 @@ def win32_hotkey_loop():
             elif hk_id == 3: threading.Thread(target=process_selection, args=("translate",), daemon=True).start()
             elif hk_id == 1: trigger_mode("zh")
             elif hk_id == 5: threading.Thread(target=process_selection, args=("ai_refine",), daemon=True).start()
+            elif hk_id == 9: threading.Thread(target=process_selection, args=("custom_1",), daemon=True).start()
+            elif hk_id == 10: threading.Thread(target=process_selection, args=("custom_2",), daemon=True).start()
             elif hk_id == 6: show_help_card()
             elif hk_id == 7: threading.Thread(target=exit_program, daemon=True).start()
         user32.TranslateMessage(ctypes.byref(msg))

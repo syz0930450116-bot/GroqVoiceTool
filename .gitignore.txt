@@ -1,0 +1,2 @@
+config.json
+update_temp.exe

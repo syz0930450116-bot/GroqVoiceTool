@@ -28,7 +28,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v1.4.0"
+CURRENT_VERSION = "v1.4.1"
 GITHUB_RELEASE_URL = "https://api.github.com/repos/syz0930450116-bot/GroqVoiceTool/releases/latest"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
@@ -300,8 +300,8 @@ def process_screenshot(x1, y1, x2, y2):
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         
-        payload = {
-            "model": "llama-3.2-11b-vision-preview",
+payload = {
+            "model": "llama-3.2-90b-vision-preview", # 替換成這個新的模型名稱
             "messages": [
                 {
                     "role": "user",

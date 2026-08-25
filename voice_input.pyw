@@ -28,7 +28,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v1.5.0"
+CURRENT_VERSION = "v1.5.1"
 GITHUB_RELEASE_URL = "https://api.github.com/repos/syz0930450116-bot/GroqVoiceTool/releases/latest"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
@@ -157,19 +157,16 @@ def prompt_api_key_gui():
 
     tk.Label(win, text="⚙️ 系統設定中心", font=("Microsoft JhengHei", 12, "bold"), fg="#61AFEF", bg="#21252B").pack(pady=(15, 5))
     
-    # API Key 設定
     tk.Label(win, text="🔑 Groq API Key：", font=("Microsoft JhengHei", 9), fg="#ABB2BF", bg="#21252B").pack(anchor="w", padx=30)
     entry_api = tk.Entry(win, width=50, font=("Consolas", 10), show="*")
     entry_api.pack(pady=(0, 10))
     if GROQ_API_KEY: entry_api.insert(0, GROQ_API_KEY)
 
-    # 自訂指令 1
     tk.Label(win, text="自訂指令 1 (Alt + 1 觸發)：", font=("Microsoft JhengHei", 9), fg="#98C379", bg="#21252B").pack(anchor="w", padx=30)
     entry_p1 = tk.Entry(win, width=50, font=("Microsoft JhengHei", 10))
     entry_p1.pack(pady=(0, 10))
     entry_p1.insert(0, CUSTOM_PROMPT_1)
 
-    # 自訂指令 2
     tk.Label(win, text="自訂指令 2 (Alt + 2 觸發)：", font=("Microsoft JhengHei", 9), fg="#E5C07B", bg="#21252B").pack(anchor="w", padx=30)
     entry_p2 = tk.Entry(win, width=50, font=("Microsoft JhengHei", 10))
     entry_p2.pack(pady=(0, 15))
@@ -324,7 +321,7 @@ def process_screenshot(x1, y1, x2, y2):
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         
         payload = {
-            "model": "llama-3.2-90b-vision-preview",
+            "model": "meta-llama/llama-3.2-11b-vision-instruct",
             "messages": [
                 {
                     "role": "user",
@@ -434,7 +431,6 @@ def process_selection(task_type):
 
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         
-        # 決定 System Prompt
         sys_prompt = "你是一個精通多國語言的專業翻譯員。將輸入文字精準翻譯為符合台灣用語習慣的繁體中文。只需輸出翻譯結果。"
         if task_type == "ai_refine": 
             sys_prompt = "你是一個高效率的 AI 文字助理。判斷輸入文字：長篇請整理3個重點摘要；短句草稿請潤飾為專業客氣的繁體中文。只需直接輸出結果。"

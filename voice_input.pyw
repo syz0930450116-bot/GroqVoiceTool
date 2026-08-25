@@ -28,7 +28,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v1.5.1"
+CURRENT_VERSION = "v1.5.2"
 GITHUB_RELEASE_URL = "https://api.github.com/repos/syz0930450116-bot/GroqVoiceTool/releases/latest"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
@@ -321,7 +321,7 @@ def process_screenshot(x1, y1, x2, y2):
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         
         payload = {
-            "model": "meta-llama/llama-3.2-11b-vision-instruct",
+            "model": "qwen/qwen3.6-27b",
             "messages": [
                 {
                     "role": "user",

@@ -76,6 +76,7 @@ CURRENT_VERSION = "v7.0.0"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
+GITHUB_REPO = "syz0930450116-bot/GroqVoiceTool"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
 os.makedirs(APPDATA_DIR, exist_ok=True)
@@ -194,6 +195,111 @@ def copy_discord_username(parent_win=None):
     pyperclip.copy(DISCORD_USERNAME)
     messagebox.showinfo("複製成功", f"已複製 Discord 帳號：{DISCORD_USERNAME}\n歡迎貼上並私訊進行功能建議或反饋！", parent=parent_win)
 
+# ================= 🔄 底層核心：自動熱更新模組 =================
+def check_for_updates(manual=False):
+    def update_worker():
+        try:
+            if manual: set_status("🔍 正在檢查雲端最新版本...", "#61AFEF")
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            headers = {"User-Agent": "GroqVoiceTool-AutoUpdater"}
+            resp = requests.get(url, headers=headers, timeout=6)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                latest_tag = data.get("tag_name", "").strip()
+                body = data.get("body", "無更新日誌說明。")
+                assets = data.get("assets", [])
+
+                if latest_tag and latest_tag != CURRENT_VERSION:
+                    download_url = None
+                    for asset in assets:
+                        if asset.get("name", "").endswith(".exe"):
+                            download_url = asset.get("browser_download_url")
+                            break
+                    
+                    if not download_url and assets:
+                        download_url = assets[0].get("browser_download_url")
+
+                    if download_url:
+                        if root: root.after(0, lambda: _prompt_update_gui(latest_tag, body, download_url))
+                        return
+
+            if manual:
+                set_status("✨ 當前已是最新版本！", "#98C379")
+                root.after(2000, hide_status)
+        except Exception as e:
+            if manual:
+                set_status("⚠️ 檢查更新失敗", "#E5C07B")
+                root.after(2000, hide_status)
+
+    threading.Thread(target=update_worker, daemon=True).start()
+
+def _prompt_update_gui(latest_tag, release_notes, download_url):
+    up_win = tk.Toplevel(root)
+    up_win.title(f"🚀 發現新版本：{latest_tag}")
+    up_win.geometry(f"540x380+{(root.winfo_screenwidth()-540)//2}+{(root.winfo_screenheight()-380)//2}")
+    up_win.attributes("-topmost", True)
+    up_win.configure(bg="#1E1E1E")
+    set_dark_title_bar(up_win)
+
+    tk.Label(up_win, text=f"🎉 發現軟體最新升級版本：{latest_tag}", font=("Microsoft JhengHei", sf(12), "bold"), fg="#61AFEF", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(14, 4))
+    tk.Label(up_win, text=f"（您當前的執行版本：{CURRENT_VERSION}）", font=("Microsoft JhengHei", sf(10)), fg="#ABB2BF", bg="#1E1E1E").pack(anchor="w", padx=16)
+
+    tk.Label(up_win, text="📝 更新內容說明：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(10, 2))
+    notes_box = scrolledtext.ScrolledText(up_win, height=8, font=("Microsoft JhengHei", sf(10)), bg="#252526", fg="#FFFFFF", wrap="word")
+    notes_box.pack(fill="both", expand=True, padx=16, pady=4)
+    notes_box.insert(tk.END, release_notes)
+    notes_box.config(state="disabled")
+
+    btn_f = tk.Frame(up_win, bg="#1E1E1E")
+    btn_f.pack(fill="x", padx=16, pady=12)
+
+    def start_download():
+        up_win.destroy()
+        threading.Thread(target=_perform_auto_update, args=(download_url,), daemon=True).start()
+
+    tk.Button(btn_f, text="⚡ 立即一鍵自動升級", command=start_download, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=14, pady=6).pack(side="right")
+    tk.Button(btn_f, text="稍後再說", command=up_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10)), relief="flat", padx=12, pady=6).pack(side="right", padx=8)
+
+def _perform_auto_update(download_url):
+    set_status("🚀 正在背景下載最新升級套件...", "#61AFEF")
+    try:
+        current_exe = sys.executable
+        if not current_exe.endswith(".exe"):
+            set_status("⚠️ 開發環境腳本無法自動替換，請下載 exe 測試", "#E5C07B")
+            root.after(3000, hide_status)
+            return
+
+        new_exe_path = os.path.join(APPDATA_DIR, "GroqVoiceTool_new.exe")
+        resp = requests.get(download_url, stream=True, timeout=30)
+        if resp.status_code == 200:
+            with open(new_exe_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk: f.write(chunk)
+            
+            set_status("✨ 下載完成，即將自動覆蓋並重啟...", "#98C379")
+            time.sleep(1.0)
+
+            # 產生覆蓋原檔並重啟的批次檔 (batch script)
+            bat_path = os.path.join(APPDATA_DIR, "update_installer.bat")
+            bat_script = f"""@echo off
+timeout /t 1 /nobreak > NUL
+move /y "{new_exe_path}" "{current_exe}"
+start "" "{current_exe}"
+del "%~f0"
+"""
+            with open(bat_path, "w", encoding="ansi") as f:
+                f.write(bat_script)
+
+            subprocess.Popen([bat_path], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            os._exit(0)
+        else:
+            set_status("⚠️ 更新檔下載失敗", "#E06C75")
+    except Exception as e:
+        trigger_cdn_error_modal("自動熱更新過程發生例外", traceback.format_exc())
+    finally:
+        root.after(3000, hide_status)
+
 def set_autostart(enable=True):
     try:
         startup_dir = os.path.join(os.getenv('APPDATA'), r'Microsoft\Windows\Start Menu\Programs\Startup')
@@ -297,7 +403,7 @@ def get_system_prompt():
         f"你是一個具備實時資訊理解能力的高效 AI 桌面助理。當前系統真實時間為：{cur_time}（2026年）。\n"
         "【原則與事實查核】：\n"
         "1. 請用繁體中文（台灣用語習慣）精準回答問題。\n"
-        "2. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名、經歷或背景混淆或張冠李戴。\n"
+        "2. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名、經歷或背景混淆或張冠流戴。\n"
         "3. 若遇到不確定的資訊，請依據檢索到的網路內容為準，不要隨意猜測。"
     )
 
@@ -355,6 +461,9 @@ def init_gui():
 
     show_startup_notice()
     toggle_floating_ball()
+
+    # 啟動時自動背景檢查更新
+    check_for_updates(manual=False)
 
     threading.Thread(target=clipboard_monitor_loop, daemon=True).start()
     if TRAY_AVAILABLE: threading.Thread(target=setup_system_tray, daemon=True).start()
@@ -870,7 +979,6 @@ def _toggle_floating_ball_main():
         ball_win.attributes("-alpha", 0.35)
         
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        # 🌟 預設懸浮球位置：右下角工作列上方
         ball_size = 42
         ball_win.geometry(f"{ball_size}x{ball_size}+{sw - 70}+{sh - 120}")
         ball_win.configure(bg="#000001")
@@ -879,7 +987,6 @@ def _toggle_floating_ball_main():
         canvas = tk.Canvas(ball_win, width=ball_size, height=ball_size, bg="#000001", highlightthickness=0)
         canvas.pack(fill="both", expand=True)
         
-        # 繪製質感圓形懸浮球
         canvas.create_oval(2, 2, ball_size-2, ball_size-2, fill=theme["accent"], outline="#FFFFFF", width=1.5)
         canvas.create_text(ball_size//2, ball_size//2, text="🤖", font=("Segoe UI Emoji", 14))
 
@@ -925,9 +1032,8 @@ def toggle_ball_menu(ball_win):
     menu_win.overrideredirect(True)
     menu_win.attributes("-topmost", True)
     
-    # 算計算選單彈出位置（小球左側或上方）
     bx, by = ball_win.winfo_x(), ball_win.winfo_y()
-    m_width, m_height = 380, 32
+    m_width, m_height = 430, 32
     
     mx = bx - m_width - 8 if bx - m_width - 8 > 10 else bx + 50
     my = by + 5
@@ -953,6 +1059,7 @@ def toggle_ball_menu(ball_win):
     clip_btn_ref = add_menu_btn("📋自動" if auto_clipboard_enabled else "📋關閉", toggle_auto_clipboard, theme["accent"] if auto_clipboard_enabled else theme["btn_bg"])
     add_menu_btn("📜歷史", lambda: prompt_api_key_gui(default_tab_idx=3), "#D19A66")
     add_menu_btn("🛡️防護", toggle_pause_mode, "#E5C07B")
+    add_menu_btn("🔄更新", lambda: check_for_updates(manual=True), "#56B6C2")
     add_menu_btn("⚙️", prompt_api_key_gui, theme["btn_bg"])
     add_menu_btn("✕", lambda: None, "#E06C75")
 
@@ -969,6 +1076,7 @@ def setup_system_tray():
     menu = pystray.Menu(
         pystray.MenuItem("⚙️ 設定中心 & API 設定", lambda icon, item: root.after(0, prompt_api_key_gui)),
         pystray.MenuItem("💬 開啟 AI 實時對話", lambda icon, item: toggle_chat_panel()),
+        pystray.MenuItem("🔄 檢查雲端軟體更新", lambda icon, item: check_for_updates(manual=True)),
         pystray.MenuItem("📌 切換懸浮球顯示/隱藏", lambda icon, item: toggle_floating_ball()),
         pystray.MenuItem("👋 結束程式", lambda icon, item: exit_program())
     )
@@ -1184,12 +1292,12 @@ def prompt_api_key_gui(default_tab_idx=0):
     
     win.geometry(f"920x820+{(root.winfo_screenwidth()-920)//2}+{(root.winfo_screenheight()-820)//2}")
     win.configure(bg=theme["card_bg"])
-    set_dark_title_bar(win)
 
     header = tk.Frame(win, bg=theme["card_bg"])
     header.pack(fill="x", padx=20, pady=(12, 6))
     tk.Label(header, text="⚙️ Groq AI 系統控制中心", font=("Microsoft JhengHei", sf(14), "bold"), fg=theme["accent"], bg=theme["card_bg"]).pack(side="left")
     
+    tk.Button(header, text="🔄 檢查雲端軟體更新", command=lambda: check_for_updates(manual=True), bg="#56B6C2", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=8, pady=2).pack(side="right", padx=(8, 0))
     tk.Button(header, text="💬 開啟 Discord 私訊作者", command=open_discord_profile, bg="#5865F2", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=8, pady=2).pack(side="right", padx=(8, 0))
     tk.Label(header, text=f"版本: {CURRENT_VERSION}", font=("Consolas", sf(10), "bold"), fg="#98C379", bg=theme["card_bg"]).pack(side="right")
 
@@ -1264,10 +1372,10 @@ def prompt_api_key_gui(default_tab_idx=0):
     tab_tips = create_scrollable_tab("💡 使用小技巧")
     tk.Label(tab_tips, text="🚀 幫助您快速上手與理解核心功能的操作指南：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
     for t_title, t_desc in [
+        ("🔄 內建自動熱更新機制", "程式啟動時會在背景發送 API 請求自動檢查最新版本，點擊「一鍵升級」即可自動完成軟體替換！"),
         ("💬 AssistiveTouch 懸浮小球設計", "類似 iPhone 的小球介面，平時完全透明省空間，點擊即可彈出全功能選單！"),
         ("💬 Discord 意見與建議直通車", "覺得軟體缺了什麼功能？點擊「直接開啟 Discord 私訊作者」即可一鍵開啟私訊視窗傳送建議！"),
-        ("🔒 安全設定鎖機制", "預設啟用「設定鎖」，防止意外調整模型或樣式。需要更改時只需點擊頂部「🔓 解鎖設定」即可修改！"),
-        ("📌 視窗不再強制最上層", "控制中心視窗不再強行遮擋其他網頁與資料，您可以在閱讀資料或工作時順暢切換。")
+        ("🔒 安全設定鎖機制", "預設啟用「設定鎖」，防止意外調整模型或樣式。需要更改時只需點擊頂部「🔓 解鎖設定」即可修改！")
     ]:
         card = tk.Frame(tab_tips, bg=theme["widget_bg"], bd=1, relief="solid", padx=12, pady=10)
         card.pack(fill="x", expand=True, pady=6)
@@ -1284,9 +1392,9 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.0.0 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
+        ("整合底層「自動熱更新」系統", "內建雲端版本比對與背景一鍵覆蓋升級機制，永保最新功能與效能。", "無縫自動更新，使用者無需再手動前往網頁下載新版 exe。"),
         ("全面升級為 iPhone 風格懸浮小球", "引入類似 AssistiveTouch 的極簡小球，點擊彈出選單，點擊功能自動收合。", "極致節省螢幕空間，解決長條選單擋畫面的痛點。"),
-        ("一鍵直達 Discord 私訊管道", "免複製貼上，點擊按鈕直接開啟瀏覽器跳轉至 Discord 個人私訊卡片。", "實現零摩擦的功能建議與問題反饋。"),
-        ("新增「安全設定鎖」機制", "加入防誤觸設定鎖，防止控制選單被意外改動。", "大幅強化軟體執行的穩定性。")
+        ("一鍵直達 Discord 私訊管道", "免複製貼上，點擊按鈕直接開啟瀏覽器跳轉至 Discord 個人私訊卡片。", "實現零摩擦的功能建議與問題反饋。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:
@@ -1557,6 +1665,7 @@ def prompt_api_key_gui(default_tab_idx=0):
     
     win.bind("<Escape>", lambda e: [win.destroy(), globals().update(unified_center_win=None)])
     
+    set_dark_title_bar(win)
     unified_center_win = win
     if default_tab_idx < len(notebook.tabs()):
         notebook.select(default_tab_idx)
@@ -1574,11 +1683,10 @@ def show_ai_window_gui(title, original_text, result_text):
     theme = get_theme()
     win = tk.Toplevel(root)
     win.title(title)
-    win.attributes("-topmost", True)  # 🌟 保持視窗位於最上層
+    win.attributes("-topmost", True)
     win.geometry(f"520x360+{root.winfo_screenwidth() - 540}+{root.winfo_screenheight() - 420}")
     win.configure(bg=theme["card_bg"])
 
-    # 元件繪製
     tk.Label(win, text="【輸入 / 原文】", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["widget_fg"], bg=theme["card_bg"]).pack(anchor="w", padx=10, pady=(10, 0))
     orig_box = tk.Text(win, height=3, font=("Microsoft JhengHei", sf(10)), wrap="word", bg=theme["inner_bg"], fg=theme["widget_fg"])
     orig_box.insert(tk.END, original_text); orig_box.config(state="disabled"); orig_box.pack(fill="x", padx=10, pady=2)
@@ -1593,7 +1701,6 @@ def show_ai_window_gui(title, original_text, result_text):
     tk.Button(btn_frame, text="關閉 (Esc)", command=lambda: [win.destroy(), globals().update(ai_result_win=None)], bg=theme["btn_bg"], fg=theme["widget_fg"], font=("Microsoft JhengHei", sf(10), "bold")).pack(side="right", padx=5)
     win.bind("<Escape>", lambda e: [win.destroy(), globals().update(ai_result_win=None)])
     
-    # 🌟 所有元件載入完畢後再套用深色標題列，避免畫面空白
     set_dark_title_bar(win)
     ai_result_win = win
 

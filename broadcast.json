@@ -1,7 +1,7 @@
 {
-    "id": "msg_001",
-    "type": "warning",
-    "title": "📢 歡迎使用 v7.0.0 全新版本！",
-    "message": "感謝您升級至 v7.0.0！本次更新加入了 iPhone 風格懸浮小球、自動熱更新與動態廣播機制。\n如有任何建議，歡迎點擊下方連結加入 Discord 私訊作者！",
-    "url": "https://discord.com/users/816981477946032150"
+    "id": "msg_v7_0_1",
+    "type": "info",
+    "title": "🎉 系統升級通知",
+    "message": "已成功自動升級至 v7.0.1 版本！整合動態遠端推播與自動熱更新機制。",
+    "url": "https://github.com/syz0930450116-bot/GroqVoiceTool/releases/latest"
 }

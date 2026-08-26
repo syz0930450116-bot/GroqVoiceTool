@@ -72,13 +72,12 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.0.2"
+CURRENT_VERSION = "v7.2.4"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
 GITHUB_REPO = "syz0930450116-bot/GroqVoiceTool"
 
-# 🌟 遠端動態推播 API 廣播網址 (可指向 GitHub Raw JSON 或 Gist)
 BROADCAST_API_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/broadcast.json"
 
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
@@ -135,6 +134,13 @@ SCALE_OPTIONS = {
     "特大字體 (1.5x)": 1.5,
     "超大字體 (1.8x)": 1.8
 }
+
+def parse_ver(v_str):
+    try:
+        clean_str = str(v_str).strip().lower().lstrip("v")
+        return tuple(map(int, clean_str.split(".")))
+    except Exception:
+        return (0, 0, 0)
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -200,7 +206,7 @@ def copy_discord_username(parent_win=None):
     pyperclip.copy(DISCORD_USERNAME)
     messagebox.showinfo("複製成功", f"已複製 Discord 帳號：{DISCORD_USERNAME}\n歡迎貼上並私訊進行功能建議或反饋！", parent=parent_win)
 
-# ================= 📢 底層核心：動態遠端推播 / API 廣播模組 =================
+# ================= 📢 底層核心：動態遠端推播 API 廣播模組 =================
 def fetch_remote_broadcast():
     def worker():
         try:
@@ -208,7 +214,7 @@ def fetch_remote_broadcast():
             if resp.status_code == 200:
                 data = resp.json()
                 msg_id = data.get("id", "")
-                msg_type = data.get("type", "info") # info, warning, force_update
+                msg_type = data.get("type", "info")
                 title = data.get("title", "📢 系統廣播通知")
                 message = data.get("message", "")
                 url = data.get("url", "")
@@ -274,7 +280,7 @@ def check_for_updates(manual=False):
                 body = data.get("body", "無更新日誌說明。")
                 assets = data.get("assets", [])
 
-                if latest_tag and latest_tag != CURRENT_VERSION:
+                if latest_tag and parse_ver(latest_tag) > parse_ver(CURRENT_VERSION):
                     download_url = None
                     for asset in assets:
                         if asset.get("name", "").endswith(".exe"):
@@ -298,25 +304,23 @@ def check_for_updates(manual=False):
 
     threading.Thread(target=update_worker, daemon=True).start()
 
-# ✅ 正確的寫法
 def _prompt_update_gui(latest_tag, release_notes, download_url):
     up_win = tk.Toplevel(root)
     up_win.title(f"🚀 發現新版本：{latest_tag}")
-    
-    # 🌟 加大視窗高度 (560x480)，確保按鈕完整呈現在畫面上
     up_win.geometry(f"560x480+{(root.winfo_screenwidth()-560)//2}+{(root.winfo_screenheight()-480)//2}")
     up_win.attributes("-topmost", True)
     up_win.configure(bg="#1E1E1E")
+
+    safe_notes = str(release_notes) if release_notes is not None else "尚無更新說明。"
 
     tk.Label(up_win, text=f"🎉 發現軟體最新升級版本：{latest_tag}", font=("Microsoft JhengHei", sf(12), "bold"), fg="#61AFEF", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(14, 4))
     tk.Label(up_win, text=f"（您當前的執行版本：{CURRENT_VERSION}）", font=("Microsoft JhengHei", sf(10)), fg="#ABB2BF", bg="#1E1E1E").pack(anchor="w", padx=16)
 
     tk.Label(up_win, text="📝 更新內容說明：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(10, 2))
     
-    # 稍微縮減文字框高度，留出足夠空間給底部按鈕列
     notes_box = scrolledtext.ScrolledText(up_win, height=6, font=("Microsoft JhengHei", sf(10)), bg="#252526", fg="#FFFFFF", wrap="word")
     notes_box.pack(fill="both", expand=True, padx=16, pady=4)
-    notes_box.insert(tk.END, release_notes)
+    notes_box.insert(tk.END, safe_notes)
     notes_box.config(state="disabled")
 
     btn_f = tk.Frame(up_win, bg="#1E1E1E")
@@ -326,13 +330,11 @@ def _prompt_update_gui(latest_tag, release_notes, download_url):
         up_win.destroy()
         threading.Thread(target=_perform_auto_update, args=(download_url,), daemon=True).start()
 
-    # 升級按鈕
-    btn_upgrade = tk.Button(btn_f, text="⚡ 立即一鍵自動升級 (Enter)", command=start_download, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=16, pady=8)
+    btn_upgrade = tk.Button(btn_f, text="⚡ 頁面一鍵自動升級 (Enter)", command=start_download, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=16, pady=8)
     btn_upgrade.pack(side="right")
     
     tk.Button(btn_f, text="稍後再說", command=up_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10)), relief="flat", padx=12, pady=8).pack(side="right", padx=8)
 
-    # 🌟 關鍵修復：將視窗焦點鎖定在升級按鈕上，並綁定 Enter / Space 按鍵
     btn_upgrade.focus_set()
     up_win.bind("<Return>", start_download)
     up_win.bind("<space>", start_download)
@@ -432,9 +434,25 @@ clip_btn_ref = None
 chat_panel_win = None
 ai_result_win = None
 
+# 全域截圖進行中標誌（單例保護）
+snip_active = False
+
 audio_frames = []
 
+def should_trigger_search(query):
+    clean_q = query.strip().lower()
+    chat_phrases = ["哈囉", "你好", "在嗎", "聽到嗎", "謝謝", "早安", "午安", "晚安", "拜拜", "hello", "hi", "hey", "test"]
+    if len(clean_q) <= 6 and any(p in clean_q for p in chat_phrases):
+        return False
+    search_keywords = ["誰是", "什麼是", "新聞", "時事", "多少錢", "價格", "今天", "最近", "介紹", "原因", "如何", "怎麼"]
+    if any(k in clean_q for k in search_keywords) or len(clean_q) > 12:
+        return True
+    return False
+
 def get_web_search_context(query):
+    if not should_trigger_search(query):
+        return ""
+
     if TAVILY_API_KEY.strip():
         try:
             url = "https://api.tavily.com/search"
@@ -479,10 +497,10 @@ def get_system_prompt():
     cur_time = time.strftime('%Y-%m-%d %H:%M:%S')
     return (
         f"你是一個具備實時資訊理解能力的高效 AI 桌面助理。當前系統真實時間為：{cur_time}（2026年）。\n"
-        "【原則與事實查核】：\n"
-        "1. 請用繁體中文（台灣用語習慣）精準回答問題。\n"
-        "2. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名、經歷或背景混淆或張冠李戴。\n"
-        "3. 若遇到不確定的資訊，請依據檢索到的網路內容為準，不要隨意猜測。"
+        "【原則與聊天規範】：\n"
+        "1. 請用自然、流暢且親切的繁體中文（台灣用語習慣）回答問題。\n"
+        "2. 當使用者進行日常閒聊、打招呼或簡單測試時，請簡短親切地回應即可，絕對不要主動吐出不相關的背景資料或資料列表。\n"
+        "3. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名或背景張冠李戴。"
     )
 
 spotlight_history = [
@@ -533,14 +551,13 @@ def init_gui():
     status_win.withdraw()
     
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    status_win.geometry(f"340x50+{sw - 360}+{sh - 110}")
-    status_label = tk.Label(status_win, text="", font=("Microsoft JhengHei", sf(11), "bold"), fg="#FFFFFF", wraplength=320, justify="left")
-    status_label.pack(fill="both", expand=True, padx=6, pady=4)
+    status_win.geometry(f"380x75+{sw - 400}+{sh - 130}")
+    status_label = tk.Label(status_win, text="", font=("Microsoft JhengHei", sf(10), "bold"), fg="#FFFFFF", wraplength=360, justify="left", padx=8, pady=6)
+    status_label.pack(fill="both", expand=True)
 
     show_startup_notice()
     toggle_floating_ball()
 
-    # 🌟 啟動時自動檢查更新與遠端推播廣播
     check_for_updates(manual=False)
     fetch_remote_broadcast()
 
@@ -555,7 +572,7 @@ def update_status_ui(text, bg_color):
         status_win.deiconify()
 
 def hide_status_ui():
-    if status_win and not recording: status_win.withdraw()
+    if status_win and not recording and not snip_active: status_win.withdraw()
 
 def set_status(text, bg_color):
     if root: root.after(0, update_status_ui, text, bg_color)
@@ -674,41 +691,76 @@ def process_whisper_and_proofread(mode):
         is_processing = False
         root.after(2500, hide_status)
 
-def trigger_cdn_error_modal(error_title, error_detail):
-    root.after(0, lambda: _show_cdn_error_gui(error_title, error_detail))
+# ================= 🛡️ 核心防護與「靜默全自動自我修復」引擎 (v7.2.4) =================
+def auto_execute_system_repair():
+    """第一層：清理殘留 Task、釋放連線與刷新關鍵變數"""
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "powershell.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        global is_processing, snip_active
+        is_processing = False
+        snip_active = False
+        set_status("🛠️ 自我修復：核心組件已重置！", "#98C379")
+        root.after(2500, hide_status)
+        return True
+    except Exception:
+        return False
 
-def _show_cdn_error_gui(error_title, error_detail):
-    err_win = tk.Toplevel(root)
-    err_win.title("🚨 系統診斷中心")
-    err_win.geometry(f"680x540+{(root.winfo_screenwidth()-680)//2}+{(root.winfo_screenheight()-540)//2}")
-    err_win.configure(bg="#181A1F")
-    set_dark_title_bar(err_win)
+def trigger_cdn_error_modal(title, err_msg):
+    """全自動靜默修復引擎：背景自動呼叫 AI 分析並自動套用修復策略"""
+    def _repair_and_diagnose_flow():
+        set_status("🤖 AI 自動修復引擎啟動中...", "#61AFEF")
+        auto_execute_system_repair()
 
-    top_banner = tk.Frame(err_win, bg="#E06C75", height=50)
-    top_banner.pack(fill="x")
-    tk.Label(top_banner, text="⚠️ 執行異常報告", font=("Microsoft JhengHei", sf(12), "bold"), fg="#FFFFFF", bg="#E06C75").pack(pady=12)
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+        prompt = f"以下是系統捕捉到的 Exception/Error 日誌：\n{err_msg}\n\n請以簡短 2 句話繁體中文說明原因並給予建議。"
+        payload = {
+            "model": MODEL_SELECTION,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
+        
+        ai_diagnosis = ""
+        try:
+            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=8)
+            if resp.status_code == 200:
+                raw = resp.json()["choices"][0]["message"]["content"].strip()
+                if "</think>" in raw: raw = raw.split("</think>")[-1].strip()
+                ai_diagnosis = to_tw_trad(raw)
+        except Exception:
+            ai_diagnosis = "無法取得 AI 連線診斷，可能為網路斷線或 API Key 額度耗盡。"
 
-    content_frame = tk.Frame(err_win, bg="#181A1F", padx=20, pady=15)
-    content_frame.pack(fill="both", expand=True)
+        def _show_gui():
+            modal = tk.Toplevel(root)
+            modal.title(f"🛠️ 靜默自動修復日誌：{title}")
+            modal.geometry("560x450")
+            modal.attributes("-topmost", True)
+            modal.configure(bg="#282C34")
+            set_dark_title_bar(modal)
 
-    tk.Label(content_frame, text=f"錯誤類型：{error_title}", font=("Microsoft JhengHei", sf(11), "bold"), fg="#E5C07B", bg="#181A1F").pack(anchor="w", pady=(0, 5))
-    
-    log_box = scrolledtext.ScrolledText(content_frame, height=8, font=("Consolas", sf(10)), bg="#21252B", fg="#ABB2BF", wrap="word")
-    log_box.pack(fill="x", pady=5)
-    log_box.insert(tk.END, f"[Version: {CURRENT_VERSION}]\n[Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}]\n\n{error_detail}")
-    log_box.config(state="disabled")
+            tk.Label(modal, text=f"🤖 AI 自動自我修復報告", font=("Microsoft JhengHei", 12, "bold"), fg="#98C379", bg="#282C34").pack(pady=(12, 2))
+            tk.Label(modal, text="已在背景自動執行 Task 清理與核心組件重置。", font=("Microsoft JhengHei", 9), fg="#ABB2BF", bg="#282C34").pack()
 
-    btn_frame = tk.Frame(content_frame, bg="#181A1F")
-    btn_frame.pack(fill="x", pady=(10, 0))
+            if ai_diagnosis:
+                diag_card = tk.Frame(modal, bg="#21252B", bd=1, relief="solid", padx=10, pady=8)
+                diag_card.pack(padx=15, pady=8, fill="x")
+                tk.Label(diag_card, text="💡 AI 智慧診斷原因與建議：", font=("Microsoft JhengHei", 9, "bold"), fg="#61AFEF", bg="#21252B").pack(anchor="w")
+                tk.Label(diag_card, text=ai_diagnosis, font=("Microsoft JhengHei", 9), fg="#FFFFFF", bg="#21252B", justify="left", wraplength=500).pack(anchor="w", pady=(2, 0))
 
-    def copy_error_log():
-        pyperclip.copy(f"--- Bug Report ---\nVersion: {CURRENT_VERSION}\nError: {error_title}\nDetail:\n{error_detail}")
-        messagebox.showinfo("成功", "錯誤日誌已複製到剪貼簿！", parent=err_win)
+            txt = scrolledtext.ScrolledText(modal, wrap="word", height=8, font=("Consolas", 9), bg="#1E1E1E", fg="#ABB2BF")
+            txt.insert("1.0", f"【原始錯誤日誌】\n{err_msg}")
+            txt.config(state="disabled")
+            txt.pack(padx=15, pady=5, fill="both", expand=True)
 
-    tk.Button(btn_frame, text="📋 複製錯誤日誌", command=copy_error_log, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=12, pady=6).pack(side="left")
-    tk.Button(btn_frame, text="💬 開啟 Discord 私訊作者", command=open_discord_profile, bg="#5865F2", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=12, pady=6).pack(side="left", padx=6)
-    tk.Button(btn_frame, text="關閉視窗", command=err_win.destroy, bg="#E06C75", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=12, pady=6).pack(side="right")
-    err_win.bind("<Escape>", lambda e: err_win.destroy())
+            btn_frame = tk.Frame(modal, bg="#282C34")
+            btn_frame.pack(pady=10)
+
+            tk.Button(btn_frame, text="⚡ 再次重置核心", command=lambda: [auto_execute_system_repair(), modal.destroy()], bg="#98C379", fg="white", font=("Microsoft JhengHei", 10, "bold"), relief="flat", padx=10).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="我知道了 (Esc)", command=modal.destroy, bg="#5C6370", fg="white", font=("Microsoft JhengHei", 10), relief="flat", padx=10).pack(side="left", padx=5)
+            modal.bind("<Escape>", lambda e: modal.destroy())
+
+        if root: root.after(0, _show_gui)
+
+    threading.Thread(target=_repair_and_diagnose_flow, daemon=True).start()
 
 def release_mod_keys():
     user32 = ctypes.windll.user32
@@ -771,7 +823,7 @@ def _toggle_chat_panel_main():
         elif msg.get("role") == "assistant" and msg.get("content"): chat_box.insert(tk.END, f"🤖 AI 助理：\n{msg.get('content')}\n\n")
     chat_box.config(state="disabled"); chat_box.see(tk.END)
 
-    status_tip = tk.Label(win, text="💡 提示：已整合專業 Tavily 實時搜尋，精準掌握人物背景與時事新聞。", font=("Microsoft JhengHei", sf(10)), fg="#98C379", bg=theme["card_bg"])
+    status_tip = tk.Label(win, text="💡 提示：智慧 Tavily 搜尋機制，僅在提問時精準查證，閒聊不打擾。", font=("Microsoft JhengHei", sf(10)), fg="#98C379", bg=theme["card_bg"])
     status_tip.pack(anchor="w", padx=16, pady=(2, 0))
 
     input_frame = tk.Frame(win, bg=theme["card_bg"])
@@ -835,7 +887,7 @@ def _toggle_chat_panel_main():
 
             if len(panel_frames) > 0:
                 audio_data = np.concatenate(panel_frames, axis=0)
-                set_status("⚡ 語音轉文字中...", "#61AFEF")
+                set_status("⚡ 語音辨識與 AI 校對中...", "#61AFEF")
                 def process_worker():
                     try:
                         wav_io = io.BytesIO()
@@ -844,9 +896,19 @@ def _toggle_chat_panel_main():
                         files = {"file": ("panel_voice.wav", wav_io.getvalue(), "audio/wav")}
                         resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data={"model": "whisper-large-v3", "language": "zh"}, timeout=12)
                         if resp.status_code == 200:
-                            txt = to_tw_trad(resp.json().get("text", "").strip())
-                            if txt: root.after(0, lambda: [entry.delete(0, tk.END), entry.insert(0, txt), execute_chat_input()])
-                        set_status("✨ 語音辨識完成", "#98C379")
+                            raw_txt = to_tw_trad(resp.json().get("text", "").strip())
+                            if raw_txt:
+                                sys_prompt = "修復繁體中文同音錯字並補齊標點符號，不要回答內容，直接輸出校對後文字。"
+                                payload = {"model": MODEL_VOICE, "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"請校對：{raw_txt}"}], "temperature": 0.0}
+                                p_resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=8)
+                                polished = raw_txt
+                                if p_resp.status_code == 200:
+                                    rc = p_resp.json()["choices"][0]["message"]["content"].strip()
+                                    if "</think>" in rc: rc = rc.split("</think>")[-1].strip()
+                                    polished = to_tw_trad(rc)
+                                
+                                root.after(0, lambda: [entry.delete(0, tk.END), entry.insert(0, polished), execute_chat_input()])
+                        set_status("✨ 語音校對完成", "#98C379")
                     except Exception:
                         set_status("⚠️ 語音辨識失敗", "#E5C07B")
                     finally:
@@ -863,10 +925,15 @@ def _toggle_chat_panel_main():
 def process_chat_logic(query, chat_box):
     global spotlight_history, is_processing
     is_processing = True
-    set_status("🌐 檢索 Tavily 網路真實資料與 AI 推理中...", "#C678DD")
+    
+    is_search_needed = should_trigger_search(query)
+    if is_search_needed:
+        set_status("🌐 檢索 Tavily 網路真實資料與 AI 推理中...", "#C678DD")
+    else:
+        set_status("🤖 AI 思考回應中...", "#61AFEF")
     
     try:
-        web_context = get_web_search_context(query)
+        web_context = get_web_search_context(query) if is_search_needed else ""
 
         spotlight_history.append({"role": "user", "content": query})
         sanitize_spotlight_history()
@@ -888,7 +955,7 @@ def process_chat_logic(query, chat_box):
             payload = {
                 "model": model_name,
                 "messages": api_messages,
-                "temperature": 0.2,
+                "temperature": 0.3,
                 "stream": True
             }
 
@@ -1168,8 +1235,15 @@ def toggle_pause_mode():
     if is_paused: set_status("⏸️ 助理已暫停", "#E5C07B")
     else: set_status("▶️ 助理已恢復", "#98C379"); root.after(1500, hide_status)
 
+# 🌟 重構截圖引擎：加入單例鎖定 (snip_active) 與頂部提示列 (Win+Shift+S 風格)
 class SnippingTool:
     def __init__(self, mode="translate"):
+        global snip_active
+        if snip_active:
+            return  # 🌟 若已有截圖遮罩在運作，自動忽略防重複觸發
+
+        snip_active = True
+        set_status("📸 [截圖進行中] 請拖曳框選區域...", "#61AFEF")
         self.mode = mode
         self.full_img = ImageGrab.grab(all_screens=True)
         
@@ -1181,28 +1255,50 @@ class SnippingTool:
         
         self.canvas = tk.Canvas(self.snip_win, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
+
+        # 🌟 頂部 Win+Shift+S 風格提示條
+        sw = self.snip_win.winfo_screenwidth()
+        tip_frame = tk.Frame(self.snip_win, bg="#21252B", padx=16, pady=8, bd=1, relief="solid")
+        tip_frame.place(relx=0.5, y=30, anchor="n")
+        tk.Label(tip_frame, text="📸 請拖曳滑鼠框選截圖區域  |  按 Esc 鍵可取消截圖", font=("Microsoft JhengHei", sf(11), "bold"), fg="#FFFFFF", bg="#21252B").pack()
+
         self.start_x = self.start_y = self.rect = None
         
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.snip_win.bind("<Escape>", lambda e: self.snip_win.destroy())
+        self.snip_win.bind("<Escape>", self.cancel_snip)
+
+    def cancel_snip(self, event=None):
+        global snip_active
+        snip_active = False
+        try: self.snip_win.destroy()
+        except Exception: pass
+        set_status("✕ 已取消截圖", "#E5C07B")
+        root.after(1500, hide_status)
 
     def on_press(self, event):
         self.start_x, self.start_y = event.x, event.y
-        self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="red", width=2, fill="white")
+        self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="#61AFEF", width=2, fill="white")
 
     def on_drag(self, event):
         self.canvas.coords(self.rect, self.start_x, self.start_y, event.x, event.y)
 
     def on_release(self, event):
-        if self.start_x is None or self.start_y is None: return
+        global snip_active
+        if self.start_x is None or self.start_y is None:
+            self.cancel_snip()
+            return
+
         x1, y1 = self.start_x, self.start_y
         x2, y2 = event.x, event.y
         
         sw = self.snip_win.winfo_screenwidth()
         sh = self.snip_win.winfo_screenheight()
-        self.snip_win.destroy()
+        
+        try: self.snip_win.destroy()
+        except Exception: pass
+        snip_active = False  # 🌟 框選結束，釋放鎖定
         
         rx1, rx2 = min(x1, x2), max(x1, x2)
         ry1, ry2 = min(y1, y2), max(y1, y2)
@@ -1219,6 +1315,9 @@ class SnippingTool:
             crop_box = (x_min, y_min, x_max, y_max)
             cropped_img = self.full_img.crop(crop_box)
             root.after(100, lambda: threading.Thread(target=process_screenshot, args=(cropped_img,), daemon=True).start())
+        else:
+            set_status("✕ 框選區域過小，已取消", "#E5C07B")
+            root.after(1500, hide_status)
 
 def process_screenshot(img):
     global is_processing
@@ -1447,17 +1546,36 @@ def prompt_api_key_gui(default_tab_idx=0):
         tk.Label(head, text=f"[{hk}]", font=("Consolas", sf(10), "bold"), fg="#E5C07B", bg=theme["widget_bg"]).pack(side="right")
         tk.Label(card, text=desc, font=("Microsoft JhengHei", sf(10)), fg=theme["widget_fg"], bg=theme["widget_bg"], justify="left").pack(anchor="w", pady=(3, 0))
 
-    # 📌 2. 使用小技巧
-    tab_tips = create_scrollable_tab("💡 使用小技巧")
-    tk.Label(tab_tips, text="🚀 幫助您快速上手與理解核心功能的操作指南：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
-    for t_title, t_desc in [
-        ("📢 動態遠端 API 廣播系統", "軟體支援雲端推播廣播！系統能即時傳送重要公告、維護通知與手動升級引導至您的螢幕。"),
-        ("🔄 內建自動熱更新機制", "程式啟動時會在背景發送 API 請求自動檢查最新版本，點擊「一鍵升級」即可自動完成軟體替換！"),
-        ("💬 AssistiveTouch 懸浮小球設計", "類似 iPhone 的小球介面，平時完全透明省空間，點擊即可彈出全功能選單！"),
-        ("💬 Discord 意見與建議直通車", "覺得軟體缺了什麼功能？點擊「直接開啟 Discord 私訊作者」即可一鍵開啟私訊視窗傳送建議！")
-    ]:
+    # 📌 2. 核心技術與使用技巧
+    tab_tips = create_scrollable_tab("💡 核心技術與小技巧")
+    tk.Label(tab_tips, text="🛠️ 本軟體底層 7 大核心架構與技術解析：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
+    
+    core_tech_list = [
+        ("🎙️ 1. 高精準語音聽寫引擎 (Whisper + LLM 雙引擎)", 
+         "底層透過 `sounddevice` 以 16kHz 採集聲波，打包送往 Groq API 進行 Whisper-large-v3 語音辨識；隨後自動流轉至 LLM 進行同音字修復與全形標點補齊，再透過 Win32 API 模擬貼上。"),
+        
+        ("⌨️ 2. Win32 全域熱鍵與鍵盤模擬引擎", 
+         "使用 `ctypes` 直接對接 Windows `user32.dll` (`RegisterHotKey` / `GetMessageW`) 在背景高效率捕捉全域快捷鍵；並運用 `keybd_event` 實現非侵入式的選取文字複製與原地覆蓋貼上。"),
+
+        ("🖼️ 3. Windows 原生免安裝 OCR 與單例截圖鎖定", 
+         "繪製 Tkinter 透明全螢幕遮罩進行區域截圖，具備單例鎖定機制 (Win+Shift+S 風格) 防止重複觸發黑屏；底層調用 Windows 10/11 原生 `Windows.Media.Ocr` PowerShell API 辨識文字。"),
+
+        ("🌐 4. 實時 RAG 智慧檢索與聊天門檻機制", 
+         "對話模組具備智慧意圖過濾，日常打招呼不打擾；僅在問題需要時發送 Tavily 檢索，精準將 Context 注入 Prompt 徹底消弭 AI 幻覺。"),
+
+        ("🛠️ 5. 靜默全自動自我修復引擎 (Auto Self-Healing)", 
+         "當系統捕捉到未預期的 Exception/Error 時，背景觸發 `auto_execute_system_repair()` 自動執行清理 PowerShell 處理序、釋放 Socket 連線與變數重設，並由 AI 背景產生診斷報告。"),
+
+        ("🔄 6. 雲端 API 廣播與自動熱更新機制", 
+         "啟動時透過 `fetch_remote_broadcast()` 抓取 GitHub 雲端 JSON 廣播；並透過 `check_for_updates()` 進行版本比對，自動下載新版並產生 `.bat` 批次檔執行 `.exe` 的無縫覆蓋與重啟。"),
+
+        ("🎨 7. iPhone 風格懸浮球與 DWM 深色 UI", 
+         "採用 `pystray` 托盤控制與 AssistiveTouch 懸浮小球設計，具備自動透明度變化與動態選單；並呼叫 `dwmapi.dll` 實現 Windows 原生視窗深色標題列與 DPI 字體銳利化。")
+    ]
+
+    for t_title, t_desc in core_tech_list:
         card = tk.Frame(tab_tips, bg=theme["widget_bg"], bd=1, relief="solid", padx=12, pady=10)
-        card.pack(fill="x", expand=True, pady=6)
+        card.pack(fill="x", expand=True, pady=5)
         tk.Label(card, text=t_title, font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["widget_bg"]).pack(anchor="w")
         tk.Label(card, text=t_desc, font=("Microsoft JhengHei", sf(10)), fg=theme["widget_fg"], bg=theme["widget_bg"], justify="left", wraplength=760).pack(anchor="w", pady=(4, 0))
 
@@ -1468,12 +1586,12 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(ver_card, text=f"📌 本地電腦先前安裝紀錄版本：{LOCAL_PREVIOUS_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E06C75", bg=theme["widget_bg"]).pack(anchor="w")
     tk.Label(ver_card, text=f"✨ 當前系統升級執行版本：{CURRENT_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w", pady=(2, 0))
 
-    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.0.0 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
+    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.2.4 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
-        ("新增「動態遠端推播 API」底層架構", "支援從雲端即時發送 info/warning/force_update 三種等級的公告廣播。", "解決舊版無廣播機制的痛點，隨時向使用者傳遞最新通知。"),
-        ("整合底層「自動熱更新」系統", "內建雲端版本比對與背景一鍵覆蓋升級機制，永保最新功能與效能。", "無縫自動更新，使用者無需再手動前往網頁下載新版 exe。"),
-        ("全面升級為 iPhone 風格懸浮小球", "引入類似 AssistiveTouch 的極簡小球，點擊彈出選單，點擊功能自動收合。", "極致節省螢幕空間，解決長條選單擋畫面的痛點。")
+        ("修復連按快捷鍵畫面疊加變黑 BUG (Win+Shift+S 模式)", "加入單例截圖鎖定機制 (`snip_active`) 與頂部動態提示列，連續按下 Alt+X 不再重複建立遮罩導致畫面變暗。", "解決重複觸發畫面過暗的問題，提供清晰明確的截圖狀態提示。"),
+        ("智慧過濾對話搜尋門檻", "加入打招呼與日常閒聊語意過濾，避免發送「哈囉」時被 Tavily 誤抓歌曲資料庫打擾。", "讓聊天對話更加自然親切、不再莫名吐出大篇幅無關資料。"),
+        ("升級對話視窗語音輸入引擎", "將對話視窗內的「🎙️ 語音輸入」補齊 LLM 精修校對邏輯，達到與 Alt+S 完全相同的聽寫智慧度。", "語音轉文字精準度顯著升級，自動校對同音字與補齊全形標點。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:
@@ -1563,6 +1681,9 @@ def prompt_api_key_gui(default_tab_idx=0):
     lock_btn = tk.Button(lock_bar, text="🔓 解鎖設定", command=toggle_lock, bg="#E06C75", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=10, pady=3)
     lock_btn.pack(side="right")
 
+    manual_repair_btn = tk.Button(lock_bar, text="⚡ 一鍵手動重置核心", command=auto_execute_system_repair, bg="#98C379", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=10, pady=3)
+    manual_repair_btn.pack(side="right", padx=(0, 8))
+
     guide_card = tk.Frame(tab_settings, bg=theme["widget_bg"], bd=1, relief="solid", padx=12, pady=10)
     guide_card.pack(fill="x", pady=(0, 10))
     tk.Label(guide_card, text="💡 取得 免費 API Key：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w")
@@ -1577,7 +1698,6 @@ def prompt_api_key_gui(default_tab_idx=0):
     chk_autostart = tk.Checkbutton(tab_settings, text="🚀 開機自動啟動 (Windows 啟動資料夾捷徑)", variable=autostart_var, font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["inner_bg"], selectcolor=theme["widget_bg"])
     chk_autostart.pack(anchor="w", pady=(4, 6))
 
-    # 區塊一：各功能 AI 模型選擇
     model_box = tk.LabelFrame(tab_settings, text=" 🎯 各功能獨立 AI 模型偏好設定 ", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E5C07B", bg=theme["inner_bg"], padx=10, pady=8)
     model_box.pack(fill="x", pady=(4, 10))
 
@@ -1596,7 +1716,6 @@ def prompt_api_key_gui(default_tab_idx=0):
     combo_s.pack(fill="x", pady=(0, 4))
     combo_s.set(MODEL_MAP.get(MODEL_SELECTION, list(MODEL_MAP.values())[0]))
 
-    # 區塊二：界面樣式與預覽
     style_box = tk.LabelFrame(tab_settings, text=" 🎨 介面外觀與預覽 ", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["inner_bg"], padx=10, pady=8)
     style_box.pack(fill="x", pady=(0, 10))
 
@@ -1626,7 +1745,6 @@ def prompt_api_key_gui(default_tab_idx=0):
     btn_preview = tk.Button(style_box, text="👁️ 即時預覽 UI 主題與字體", command=preview_ui, bg="#61AFEF", fg="#21252B", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=10, pady=4)
     btn_preview.pack(anchor="w")
 
-    # 區塊三：API 密鑰與 Prompt
     tk.Label(tab_settings, text="🔑 Groq API Key：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["widget_fg"], bg=theme["inner_bg"]).pack(anchor="w", pady=(4, 2))
     entry_api = tk.Entry(tab_settings, font=("Consolas", sf(11)), show="*")
     entry_api.pack(fill="x", anchor="w", pady=(0, 8), ipady=3)
@@ -1736,7 +1854,6 @@ def prompt_api_key_gui(default_tab_idx=0):
         tk.Label(card, text=f"❓ {e_title}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E5C07B", bg=theme["widget_bg"]).pack(anchor="w")
         tk.Label(card, text=e_desc, font=("Microsoft JhengHei", sf(10)), fg=theme["widget_fg"], bg=theme["widget_bg"], justify="left", wraplength=760).pack(anchor="w", pady=(4, 0))
 
-    # 底部關閉與意見反饋按鈕
     bottom_btn_frame = tk.Frame(win, bg=theme["card_bg"])
     bottom_btn_frame.pack(pady=10)
     

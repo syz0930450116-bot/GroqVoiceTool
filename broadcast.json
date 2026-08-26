@@ -1,7 +1,7 @@
 {
-    "id": "msg_v7_0_1",
+    "id": "msg_v7_0_2",
     "type": "info",
     "title": "🎉 系統升級通知",
-    "message": "已成功自動升級至 v7.0.1 版本！整合動態遠端推播與自動熱更新機制。",
+    "message": "已成功自動升級至 v7.0.2 版本！全面優化更新視窗版面與 Enter 鍵一鍵升級體驗。",
     "url": "https://github.com/syz0930450116-bot/GroqVoiceTool/releases/latest"
 }

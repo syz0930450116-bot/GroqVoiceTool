@@ -72,7 +72,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.0.1"
+CURRENT_VERSION = "v7.0.2"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"

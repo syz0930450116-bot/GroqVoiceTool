@@ -78,6 +78,9 @@ DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
 GITHUB_REPO = "syz0930450116-bot/GroqVoiceTool"
 
+# 🌟 遠端動態推播 API 廣播網址 (可指向 GitHub Raw JSON 或 Gist)
+BROADCAST_API_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/broadcast.json"
+
 APPDATA_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'GroqVoiceTool')
 os.makedirs(APPDATA_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(APPDATA_DIR, "config.json")
@@ -182,6 +185,8 @@ MODEL_CHAT = config.get("model_chat", "qwen-2.5-32b")
 MODEL_SELECTION = config.get("model_selection", "openai/gpt-oss-20b")
 
 LOCAL_PREVIOUS_VERSION = config.get("last_version", "尚未紀錄（首次安裝）")
+SEEN_BROADCAST_IDS = config.get("seen_broadcast_ids", [])
+
 config["last_version"] = CURRENT_VERSION
 save_config(config)
 
@@ -194,6 +199,65 @@ def open_discord_profile():
 def copy_discord_username(parent_win=None):
     pyperclip.copy(DISCORD_USERNAME)
     messagebox.showinfo("複製成功", f"已複製 Discord 帳號：{DISCORD_USERNAME}\n歡迎貼上並私訊進行功能建議或反饋！", parent=parent_win)
+
+# ================= 📢 底層核心：動態遠端推播 / API 廣播模組 =================
+def fetch_remote_broadcast():
+    def worker():
+        try:
+            resp = requests.get(BROADCAST_API_URL, headers={"User-Agent": "GroqVoiceTool-BroadcastFetcher"}, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                msg_id = data.get("id", "")
+                msg_type = data.get("type", "info") # info, warning, force_update
+                title = data.get("title", "📢 系統廣播通知")
+                message = data.get("message", "")
+                url = data.get("url", "")
+
+                if msg_id and msg_id not in SEEN_BROADCAST_IDS:
+                    SEEN_BROADCAST_IDS.append(msg_id)
+                    config["seen_broadcast_ids"] = SEEN_BROADCAST_IDS
+                    save_config(config)
+
+                    if root: root.after(0, lambda: _show_broadcast_gui(title, message, msg_type, url))
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+def _show_broadcast_gui(title, message, msg_type, url):
+    if msg_type == "info":
+        set_status(f"📢 {message[:30]}...", "#61AFEF")
+        root.after(4000, hide_status)
+        return
+
+    bc_win = tk.Toplevel(root)
+    bc_win.title(title)
+    bc_win.geometry(f"500x320+{(root.winfo_screenwidth()-500)//2}+{(root.winfo_screenheight()-320)//2}")
+    bc_win.attributes("-topmost", True)
+    bc_win.configure(bg="#1E1E1E")
+    set_dark_title_bar(bc_win)
+
+    header_color = "#E06C75" if msg_type == "force_update" else "#E5C07B"
+    
+    top_bar = tk.Frame(bc_win, bg=header_color)
+    top_bar.pack(fill="x")
+    tk.Label(top_bar, text=title, font=("Microsoft JhengHei", sf(11), "bold"), fg="#FFFFFF", bg=header_color).pack(pady=8)
+
+    content_f = tk.Frame(bc_win, bg="#1E1E1E", padx=16, pady=12)
+    content_f.pack(fill="both", expand=True)
+
+    msg_box = scrolledtext.ScrolledText(content_f, font=("Microsoft JhengHei", sf(10)), bg="#252526", fg="#FFFFFF", wrap="word")
+    msg_box.pack(fill="both", expand=True)
+    msg_box.insert(tk.END, message)
+    msg_box.config(state="disabled")
+
+    btn_f = tk.Frame(bc_win, bg="#1E1E1E")
+    btn_f.pack(fill="x", padx=16, pady=10)
+
+    if url:
+        tk.Button(btn_f, text="🔗 查看詳情 / 前往連結", command=lambda: webbrowser.open(url), bg="#61AFEF", fg="#21252B", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=12, pady=5).pack(side="left")
+
+    tk.Button(btn_f, text="我知道了", command=bc_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=14, pady=5).pack(side="right")
 
 # ================= 🔄 底層核心：自動熱更新模組 =================
 def check_for_updates(manual=False):
@@ -227,39 +291,53 @@ def check_for_updates(manual=False):
             if manual:
                 set_status("✨ 當前已是最新版本！", "#98C379")
                 root.after(2000, hide_status)
-        except Exception as e:
+        except Exception:
             if manual:
                 set_status("⚠️ 檢查更新失敗", "#E5C07B")
                 root.after(2000, hide_status)
 
     threading.Thread(target=update_worker, daemon=True).start()
 
-def _prompt_update_gui(latest_tag, release_notes, download_url):
+def def _prompt_update_gui(latest_tag, release_notes, download_url):
     up_win = tk.Toplevel(root)
     up_win.title(f"🚀 發現新版本：{latest_tag}")
-    up_win.geometry(f"540x380+{(root.winfo_screenwidth()-540)//2}+{(root.winfo_screenheight()-380)//2}")
+    
+    # 🌟 加大視窗高度 (560x480)，確保按鈕完整呈現在畫面上
+    up_win.geometry(f"560x480+{(root.winfo_screenwidth()-560)//2}+{(root.winfo_screenheight()-480)//2}")
     up_win.attributes("-topmost", True)
     up_win.configure(bg="#1E1E1E")
-    set_dark_title_bar(up_win)
 
     tk.Label(up_win, text=f"🎉 發現軟體最新升級版本：{latest_tag}", font=("Microsoft JhengHei", sf(12), "bold"), fg="#61AFEF", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(14, 4))
     tk.Label(up_win, text=f"（您當前的執行版本：{CURRENT_VERSION}）", font=("Microsoft JhengHei", sf(10)), fg="#ABB2BF", bg="#1E1E1E").pack(anchor="w", padx=16)
 
     tk.Label(up_win, text="📝 更新內容說明：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg="#1E1E1E").pack(anchor="w", padx=16, pady=(10, 2))
-    notes_box = scrolledtext.ScrolledText(up_win, height=8, font=("Microsoft JhengHei", sf(10)), bg="#252526", fg="#FFFFFF", wrap="word")
+    
+    # 稍微縮減文字框高度，留出足夠空間給底部按鈕列
+    notes_box = scrolledtext.ScrolledText(up_win, height=6, font=("Microsoft JhengHei", sf(10)), bg="#252526", fg="#FFFFFF", wrap="word")
     notes_box.pack(fill="both", expand=True, padx=16, pady=4)
     notes_box.insert(tk.END, release_notes)
     notes_box.config(state="disabled")
 
     btn_f = tk.Frame(up_win, bg="#1E1E1E")
-    btn_f.pack(fill="x", padx=16, pady=12)
+    btn_f.pack(fill="x", padx=16, pady=16)
 
-    def start_download():
+    def start_download(event=None):
         up_win.destroy()
         threading.Thread(target=_perform_auto_update, args=(download_url,), daemon=True).start()
 
-    tk.Button(btn_f, text="⚡ 立即一鍵自動升級", command=start_download, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=14, pady=6).pack(side="right")
-    tk.Button(btn_f, text="稍後再說", command=up_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10)), relief="flat", padx=12, pady=6).pack(side="right", padx=8)
+    # 升級按鈕
+    btn_upgrade = tk.Button(btn_f, text="⚡ 立即一鍵自動升級 (Enter)", command=start_download, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=16, pady=8)
+    btn_upgrade.pack(side="right")
+    
+    tk.Button(btn_f, text="稍後再說", command=up_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10)), relief="flat", padx=12, pady=8).pack(side="right", padx=8)
+
+    # 🌟 關鍵修復：將視窗焦點鎖定在升級按鈕上，並綁定 Enter / Space 按鍵
+    btn_upgrade.focus_set()
+    up_win.bind("<Return>", start_download)
+    up_win.bind("<space>", start_download)
+    up_win.bind("<Escape>", lambda e: up_win.destroy())
+
+    set_dark_title_bar(up_win)
 
 def _perform_auto_update(download_url):
     set_status("🚀 正在背景下載最新升級套件...", "#61AFEF")
@@ -280,7 +358,6 @@ def _perform_auto_update(download_url):
             set_status("✨ 下載完成，即將自動覆蓋並重啟...", "#98C379")
             time.sleep(1.0)
 
-            # 產生覆蓋原檔並重啟的批次檔 (batch script)
             bat_path = os.path.join(APPDATA_DIR, "update_installer.bat")
             bat_script = f"""@echo off
 timeout /t 1 /nobreak > NUL
@@ -403,7 +480,7 @@ def get_system_prompt():
         f"你是一個具備實時資訊理解能力的高效 AI 桌面助理。當前系統真實時間為：{cur_time}（2026年）。\n"
         "【原則與事實查核】：\n"
         "1. 請用繁體中文（台灣用語習慣）精準回答問題。\n"
-        "2. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名、經歷或背景混淆或張冠流戴。\n"
+        "2. 面對知名人物、網紅或真實事件時，請嚴格核對事實，切勿將不同人的本名、經歷或背景混淆或張冠李戴。\n"
         "3. 若遇到不確定的資訊，請依據檢索到的網路內容為準，不要隨意猜測。"
     )
 
@@ -462,8 +539,9 @@ def init_gui():
     show_startup_notice()
     toggle_floating_ball()
 
-    # 啟動時自動背景檢查更新
+    # 🌟 啟動時自動檢查更新與遠端推播廣播
     check_for_updates(manual=False)
+    fetch_remote_broadcast()
 
     threading.Thread(target=clipboard_monitor_loop, daemon=True).start()
     if TRAY_AVAILABLE: threading.Thread(target=setup_system_tray, daemon=True).start()
@@ -1372,10 +1450,10 @@ def prompt_api_key_gui(default_tab_idx=0):
     tab_tips = create_scrollable_tab("💡 使用小技巧")
     tk.Label(tab_tips, text="🚀 幫助您快速上手與理解核心功能的操作指南：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
     for t_title, t_desc in [
+        ("📢 動態遠端 API 廣播系統", "軟體支援雲端推播廣播！系統能即時傳送重要公告、維護通知與手動升級引導至您的螢幕。"),
         ("🔄 內建自動熱更新機制", "程式啟動時會在背景發送 API 請求自動檢查最新版本，點擊「一鍵升級」即可自動完成軟體替換！"),
         ("💬 AssistiveTouch 懸浮小球設計", "類似 iPhone 的小球介面，平時完全透明省空間，點擊即可彈出全功能選單！"),
-        ("💬 Discord 意見與建議直通車", "覺得軟體缺了什麼功能？點擊「直接開啟 Discord 私訊作者」即可一鍵開啟私訊視窗傳送建議！"),
-        ("🔒 安全設定鎖機制", "預設啟用「設定鎖」，防止意外調整模型或樣式。需要更改時只需點擊頂部「🔓 解鎖設定」即可修改！")
+        ("💬 Discord 意見與建議直通車", "覺得軟體缺了什麼功能？點擊「直接開啟 Discord 私訊作者」即可一鍵開啟私訊視窗傳送建議！")
     ]:
         card = tk.Frame(tab_tips, bg=theme["widget_bg"], bd=1, relief="solid", padx=12, pady=10)
         card.pack(fill="x", expand=True, pady=6)
@@ -1392,9 +1470,9 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.0.0 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
+        ("新增「動態遠端推播 API」底層架構", "支援從雲端即時發送 info/warning/force_update 三種等級的公告廣播。", "解決舊版無廣播機制的痛點，隨時向使用者傳遞最新通知。"),
         ("整合底層「自動熱更新」系統", "內建雲端版本比對與背景一鍵覆蓋升級機制，永保最新功能與效能。", "無縫自動更新，使用者無需再手動前往網頁下載新版 exe。"),
-        ("全面升級為 iPhone 風格懸浮小球", "引入類似 AssistiveTouch 的極簡小球，點擊彈出選單，點擊功能自動收合。", "極致節省螢幕空間，解決長條選單擋畫面的痛點。"),
-        ("一鍵直達 Discord 私訊管道", "免複製貼上，點擊按鈕直接開啟瀏覽器跳轉至 Discord 個人私訊卡片。", "實現零摩擦的功能建議與問題反饋。")
+        ("全面升級為 iPhone 風格懸浮小球", "引入類似 AssistiveTouch 的極簡小球，點擊彈出選單，點擊功能自動收合。", "極致節省螢幕空間，解決長條選單擋畫面的痛點。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:
@@ -1592,6 +1670,7 @@ def prompt_api_key_gui(default_tab_idx=0):
                 "model_chat": MODEL_CHAT,
                 "model_selection": MODEL_SELECTION,
                 "last_version": CURRENT_VERSION,
+                "seen_broadcast_ids": SEEN_BROADCAST_IDS,
                 "autostart": autostart_var.get()
             })
             is_settings_locked = True

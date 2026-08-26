@@ -298,7 +298,8 @@ def check_for_updates(manual=False):
 
     threading.Thread(target=update_worker, daemon=True).start()
 
-def def _prompt_update_gui(latest_tag, release_notes, download_url):
+# ✅ 正確的寫法
+def _prompt_update_gui(latest_tag, release_notes, download_url):
     up_win = tk.Toplevel(root)
     up_win.title(f"🚀 發現新版本：{latest_tag}")
     

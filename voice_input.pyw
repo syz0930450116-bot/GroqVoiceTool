@@ -72,7 +72,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.2.6"
+CURRENT_VERSION = "v7.2.7"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -1587,9 +1587,10 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(ver_card, text=f"📌 本地電腦先前安裝紀錄版本：{LOCAL_PREVIOUS_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E06C75", bg=theme["widget_bg"]).pack(anchor="w")
     tk.Label(ver_card, text=f"✨ 當前系統升級執行版本：{CURRENT_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w", pady=(2, 0))
 
-    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.2.4 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
+    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.2.7 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
+        ("SemVer 語意化版本管理規範升級", "遵循 vX.Y.Z 標準語意化版本發布流程，完善版本號管理與自動熱更新對接。", "確保系統元件與更新檔比對順暢，降低版本混淆與更新異常風險。"),
         ("修復連按快捷鍵畫面疊加變黑 BUG (Win+Shift+S 模式)", "加入單例截圖鎖定機制 (`snip_active`) 與頂部動態提示列，連續按下 Alt+X 不再重複建立遮罩導致畫面變暗。", "解決重複觸發畫面過暗的問題，提供清晰明確的截圖狀態提示。"),
         ("智慧過濾對話搜尋門檻", "加入打招呼與日常閒聊語意過濾，避免發送「哈囉」時被 Tavily 誤抓歌曲資料庫打擾。", "讓聊天對話更加自然親切、不再莫名吐出大篇幅無關資料。"),
         ("升級對話視窗語音輸入引擎", "將對話視窗內的「🎙️ 語音輸入」補齊 LLM 精修校對邏輯，達到與 Alt+S 完全相同的聽寫智慧度。", "語音轉文字精準度顯著升級，自動校對同音字與補齊全形標點。")

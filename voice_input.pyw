@@ -1,4 +1,4 @@
-CURRENT_VERSION = "v1.0.1"
+CURRENT_VERSION = "v1.0.2"
 import os
 import re
 import subprocess

@@ -3,9 +3,17 @@ import re
 import subprocess
 import sys
 import json
-import httpx
+import urllib.request
+import urllib.parse
 import tkinter as tk
 from tkinter import messagebox
+
+# 嘗試載入 httpx，若無則降級使用 urllib
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    HAS_HTTPX = False
 
 # 強制將工作目錄鎖定為當前 deploy.py 檔案所在的專案資料夾
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +47,7 @@ def ensure_gitignore_and_purge():
         pass
 
 def build_single_exe():
-    """自動呼叫 PyInstaller 打包產生單一獨立 .exe 檔"""
+    """自動呼叫 PyInstaller 打包產生單一獨立 .exe 檔 (強制收集 httpx 模組)"""
     main_script, _, _ = find_main_script()
     if not main_script:
         return False
@@ -49,8 +57,10 @@ def build_single_exe():
         cmd = [
             sys.executable, "-m", "PyInstaller",
             "--noconfirm",
-            "--onefile",       # 指定產生單一 Exe 檔
-            "--windowed",      # 隱藏控制台黑視窗
+            "--onefile",
+            "--windowed",
+            "--hidden-import", "httpx",        # 🌟 強制打包 httpx 模組
+            "--collect-all", "httpx",           # 🌟 收集 httpx 所有依賴
             "--name", "voice_input",
             main_script
         ]
@@ -106,7 +116,6 @@ def find_main_script():
         if content and "CURRENT_VERSION" in content:
             return file, content, enc
             
-    # 備用機制：若均未找到 CURRENT_VERSION 關鍵字，直接鎖定 voice_input.pyw
     if os.path.exists("voice_input.pyw"):
         content, enc = try_read_file("voice_input.pyw")
         return "voice_input.pyw", content, enc
@@ -135,7 +144,7 @@ def get_groq_api_key():
     return ""
 
 def generate_ai_release_notes(main_script, new_version):
-    """呼叫 Groq LLM API 自動為 GitHub Release 撰寫契合使用者範例圖片格式的 Title 與 Description (Notes)"""
+    """呼叫 Groq LLM API 自動為 GitHub Release 撰寫 Title 與 Notes (支援 httpx 與 urllib 雙重備用機制)"""
     api_key = get_groq_api_key()
     try:
         diff_bytes = subprocess.check_output(["git", "diff", main_script])
@@ -181,22 +190,50 @@ def generate_ai_release_notes(main_script, new_version):
 {diff_text}
 """
 
-    try:
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {"model": "qwen-2.5-32b", "messages": [{"role": "user", "content": prompt}], "temperature": 0.2}
+    payload_data = {
+        "model": "qwen-2.5-32b",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2
+    }
 
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            if resp.status_code == 200:
-                raw_content = resp.json()["choices"][0]["message"]["content"].strip()
-                if "</think>" in raw_content:
-                    raw_content = raw_content.split("</think>")[-1].strip()
-                json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
-                if json_match:
-                    res_json = json.loads(json_match.group(0))
-                    return res_json.get("title", default_title), res_json.get("body", default_body)
-    except Exception:
-        pass
+    try:
+        # 1. 優先嘗試使用 httpx
+        if HAS_HTTPX:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload_data)
+                if resp.status_code == 200:
+                    raw_content = resp.json()["choices"][0]["message"]["content"].strip()
+                    if "</think>" in raw_content:
+                        raw_content = raw_content.split("</think>")[-1].strip()
+                    json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+                    if json_match:
+                        res_json = json.loads(json_match.group(0))
+                        return res_json.get("title", default_title), res_json.get("body", default_body)
+        
+        # 2. 備用方案：使用標準庫 urllib.request
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=json.dumps(payload_data).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            res_body = response.read().decode("utf-8")
+            res_data = json.loads(res_body)
+            raw_content = res_data["choices"][0]["message"]["content"].strip()
+            if "</think>" in raw_content:
+                raw_content = raw_content.split("</think>")[-1].strip()
+            json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+            if json_match:
+                res_json = json.loads(json_match.group(0))
+                return res_json.get("title", default_title), res_json.get("body", default_body)
+    except Exception as e:
+        print(f"⚠️ API 呼叫例外: {e}")
 
     return default_title, default_body
 
@@ -217,11 +254,9 @@ def main():
 
     major, minor, patch, suffix, old_line = get_current_version(content)
     
-    # 🌟 防錯處理：若主程式檔未定義 CURRENT_VERSION，自動補充
     if not old_line:
         print("⚠️ 未偵測到 CURRENT_VERSION 變數，正在自動插入預設版本號...")
         major, minor, patch, suffix = 1, 0, 0, ""
-        old_line = None
         current_ver_str = "v1.0.0"
         new_ver_str = "v1.0.1"
         new_line = f'CURRENT_VERSION = "{new_ver_str}"\n'
@@ -245,7 +280,7 @@ def main():
 
     full_commit_msg = f"{new_ver_str}: {release_title}"
 
-    # 自動打包產生單一 .exe 檔
+    # 自動打包產生包含所有相依模組的單一 .exe 檔
     build_single_exe()
 
     print("\n🚀 正在執行安全的 Git 提交與推送...")

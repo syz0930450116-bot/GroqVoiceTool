@@ -1,0 +1,9 @@
+config.json
+update_temp.exe
+build/
+*.exe
+*.pkg
+dist/
+*.spec
+
+*.dll

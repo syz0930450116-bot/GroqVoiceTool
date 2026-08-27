@@ -1,0 +1,7 @@
+{
+    "id": "msg_v7_2_4",
+    "type": "info",
+    "title": "🎉 系統升級通知 (v7.2.4)",
+    "message": "已成功升級至 v7.2.4！修復連按截圖畫面變黑 BUG，並新增 Win+Shift+S 風格提示列。",
+    "url": "https://github.com/syz0930450116-bot/GroqVoiceTool/releases/latest"
+}

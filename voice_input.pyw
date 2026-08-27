@@ -72,7 +72,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.2.4"
+CURRENT_VERSION = "v7.2.6"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -363,9 +363,10 @@ def _perform_auto_update(download_url):
 
             bat_path = os.path.join(APPDATA_DIR, "update_installer.bat")
             bat_script = f"""@echo off
-timeout /t 1 /nobreak > NUL
+chcp 65001 > nul
+timeout /t 2 /nobreak > nul
 move /y "{new_exe_path}" "{current_exe}"
-start "" "{current_exe}"
+start /b "" cmd /c start "" "{current_exe}"
 del "%~f0"
 """
             with open(bat_path, "w", encoding="ansi") as f:

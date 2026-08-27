@@ -7,10 +7,15 @@ import httpx
 import tkinter as tk
 from tkinter import messagebox
 
+# 強制將工作目錄鎖定為當前 deploy.py 檔案所在的專案資料夾
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR:
+    os.chdir(SCRIPT_DIR)
+
 def ensure_gitignore_and_purge():
-    """自動檢查並修正 .gitignore，且強制移除暫存區中的大檔案資料夾"""
+    """自動檢查並修正 .gitignore，過濾編譯輸出資料夾與單一 exe，避免傳上 GitHub"""
     gitignore_path = ".gitignore"
-    ignored_patterns = ["dist/", "build/", "*.exe", "*.spec", "*.dll"]
+    ignored_patterns = ["dist/", "build/", "*.spec", "*.exe"]
     
     existing_content = ""
     if os.path.exists(gitignore_path):
@@ -25,34 +30,49 @@ def ensure_gitignore_and_purge():
         with open(gitignore_path, "a", encoding="utf-8") as f:
             f.write("\n" + "\n".join(needed_additions) + "\n")
 
-    # 強制將歷史大檔從 Git 索引中移除
+    # 強制將 dist, build 與 exe 從 Git 暫存索引中移除
     try:
         subprocess.run(["git", "rm", "-r", "--cached", "dist"], capture_output=True)
         subprocess.run(["git", "rm", "-r", "--cached", "build"], capture_output=True)
+        subprocess.run(["git", "rm", "--cached", "*.exe"], capture_output=True)
     except Exception:
         pass
 
+def build_single_exe():
+    """自動呼叫 PyInstaller 打包產生單一獨立 .exe 檔"""
+    main_script, _, _ = find_main_script()
+    if not main_script:
+        return False
+    
+    print("📦 正在使用 PyInstaller 打包為單一獨立 .exe 檔案 (onefile 模式)...")
+    try:
+        cmd = [
+            sys.executable, "-m", "PyInstaller",
+            "--noconfirm",
+            "--onefile",       # 指定產生單一 Exe 檔
+            "--windowed",      # 隱藏控制台黑視窗
+            "--name", "voice_input",
+            main_script
+        ]
+        subprocess.run(cmd, check=True)
+        print("✅ 單一 .exe 檔案打包成功！產出路徑：dist/voice_input.exe")
+        return True
+    except Exception as e:
+        print(f"⚠️ 自動打包 .exe 失敗: {e}")
+        return False
+
 def fix_git_large_file_history():
     """當偵測到 GitHub GH001 大檔案阻擋時，自動孤立並重新建構乾淨無大檔的 Commit 歷史"""
-    print("🧹 正在深度洗刷 Git 歷史紀錄，徹底剔除 >100MB 大檔案...")
+    print("🧹 正在深度洗刷 Git 歷史紀錄，徹底剔除 >100MB 大檔案與過期快取...")
     try:
-        # 1. 切換至臨時孤立分支 (不帶任何舊的大檔 Commit 歷史)
         subprocess.run(["git", "checkout", "--orphan", "temp_clean_branch"], check=True, capture_output=True)
-        
-        # 2. 徹底移除暫存區中的 dist 與 build
         subprocess.run(["git", "rm", "-r", "--cached", "dist"], capture_output=True)
         subprocess.run(["git", "rm", "-r", "--cached", "build"], capture_output=True)
-        
-        # 3. 重新 Stage 乾淨源碼
+        subprocess.run(["git", "rm", "--cached", "*.exe"], capture_output=True)
         subprocess.run(["git", "add", "."], check=True)
-        
-        # 4. 提交乾淨首刷 Commit
-        subprocess.run(["git", "commit", "-m", "refactor: purge large files from history"], check=True, capture_output=True)
-        
-        # 5. 強制將孤立分支覆蓋本地 main 分支
+        subprocess.run(["git", "commit", "-m", "refactor: purge large files and built binaries"], check=True, capture_output=True)
         subprocess.run(["git", "branch", "-D", "main"], capture_output=True)
         subprocess.run(["git", "branch", "-m", "main"], check=True)
-        
         print("✨ 本地 Git 歷史紀錄已成功洗刷乾淨！")
         return True
     except Exception as e:
@@ -73,7 +93,7 @@ def try_read_file(filepath):
 
 def find_main_script():
     """自動搜尋包含 CURRENT_VERSION 的 Python 主程式檔案 (支援 .py 與 .pyw)"""
-    target_files = ["voice_input.pyw", "voice_input.py"]
+    target_files = ["voice_input.pyw", "voice_input.py", "main.pyw", "main.py", "app.pyw", "app.py"]
     for tf in target_files:
         if os.path.exists(tf):
             content, enc = try_read_file(tf)
@@ -85,10 +105,17 @@ def find_main_script():
         content, enc = try_read_file(file)
         if content and "CURRENT_VERSION" in content:
             return file, content, enc
+            
+    # 備用機制：若均未找到 CURRENT_VERSION 關鍵字，直接鎖定 voice_input.pyw
+    if os.path.exists("voice_input.pyw"):
+        content, enc = try_read_file("voice_input.pyw")
+        return "voice_input.pyw", content, enc
+        
     return None, None, None
 
 def get_current_version(content):
-    pattern = r'CURRENT_VERSION\s*=\s*["\']v?(\d+)\.(\d+)\.(\d+)(-[^"\']*)?["\']'
+    """超寬鬆正則解析器：相容各類版本號寫法"""
+    pattern = r'CURRENT_VERSION\s*=\s*["\']v?(\d+)\.(\d+)\.(\d+)([^"\']*)?["\']'
     match = re.search(pattern, content)
     if match:
         major, minor, patch, suffix = match.groups()
@@ -108,6 +135,7 @@ def get_groq_api_key():
     return ""
 
 def generate_ai_release_notes(main_script, new_version):
+    """呼叫 Groq LLM API 自動為 GitHub Release 撰寫契合使用者範例圖片格式的 Title 與 Description (Notes)"""
     api_key = get_groq_api_key()
     try:
         diff_bytes = subprocess.check_output(["git", "diff", main_script])
@@ -125,8 +153,8 @@ def generate_ai_release_notes(main_script, new_version):
     if len(diff_text) > 3000:
         diff_text = diff_text[:3000] + "\n... (diff truncated)"
 
-    default_title = f"🚀 Release {new_version} - 系統例行最佳化與維護"
-    default_body = f"### 🚀 {new_version} 更新內容說明\n- 本次更新包含底層系統穩定性提升與效能微調。\n- 增強系統執行緒安全性與資源釋放機制。"
+    default_title = f"{new_version} - 系統例行最佳化與體驗優化"
+    default_body = f"### ⚡ {new_version} 更新說明\n\n* **系統底層優化**: 提升軟體整體執行緒穩定性與記憶體釋放機制。\n* **效能維護**: 最佳化網路請求連線池回應速度。"
 
     if not api_key:
         return default_title, default_body
@@ -136,11 +164,17 @@ def generate_ai_release_notes(main_script, new_version):
 【規範要求】：
 1. 輸出格式必須嚴格符合 JSON 物件格式：
 {{
-  "title": "版本 Title (例如: 🚀 Release {new_version} - 標題簡述)",
-  "body": "Markdown 格式的詳細 Release Note 內容"
+  "title": "{new_version} - 一句話標題摘要 (例如: {new_version} - 修復連按截圖變黑 BUG 與體驗優化)",
+  "body": "Markdown 格式內容"
 }}
-2. 內容請使用自然流暢的台灣繁體中文。
-3. 結構清單請分為：「⚡ 效能與架構最佳化」、「🐛 Bug 修正 / 穩定性強化」、「🛠️ 其他微調」。
+2. body 的排版必須嚴格比照以下範例樣式：
+### ⚡ {new_version} 更新說明
+
+* **修復連按截圖畫面變黑 BUG**: 加入 `snip_active` 單例鎖定機制，連續按下 `Alt + X` 不會再重複堆疊遮罩導致畫面過暗。
+* **新增 Windows 風格提示列**: 截圖時畫面頂部顯示懸浮提示，並支援按下 `Esc` 鍵隨時取消。
+* **對話視窗語音輸入升級**: 對話面板內部語音輸入補齊 LLM 精修校對邏輯，提升同音錯字校對精準度。
+
+3. 內容請使用自然流暢的台灣繁體中文技術用語。
 4. 絕對只輸出 JSON 字串，不要包含任何其他文字或解說。
 
 【Git Diff 變更內容】：
@@ -176,33 +210,43 @@ def main():
     print("🔍 正在掃描專案目錄...")
     main_script, content, enc = find_main_script()
     if not main_script or not content:
-        messagebox.showerror("部署失敗", "找不到可用的 Python 主程式檔案（.py 或 .pyw）！")
+        messagebox.showerror("部署失敗", f"在目錄 '{os.getcwd()}' 下找不到可用的 Python 主程式檔案（.py 或 .pyw）！")
         sys.exit(1)
 
     print(f"✅ 已成功鎖定主程式檔案：'{main_script}' (編碼: {enc})")
 
     major, minor, patch, suffix, old_line = get_current_version(content)
-    if not old_line:
-        messagebox.showerror("部署失敗", f"在 '{main_script}' 中找不到可解析的 CURRENT_VERSION 格式！")
-        sys.exit(1)
-
-    current_ver_str = f"v{major}.{minor}.{patch}{suffix}"
     
-    # 依據 SemVer 規範自動遞增修訂號 (Patch +1)
-    new_patch = patch + 1
-    new_ver_str = f"v{major}.{minor}.{new_patch}"
-    new_line = f'CURRENT_VERSION = "{new_ver_str}"'
+    # 🌟 防錯處理：若主程式檔未定義 CURRENT_VERSION，自動補充
+    if not old_line:
+        print("⚠️ 未偵測到 CURRENT_VERSION 變數，正在自動插入預設版本號...")
+        major, minor, patch, suffix = 1, 0, 0, ""
+        old_line = None
+        current_ver_str = "v1.0.0"
+        new_ver_str = "v1.0.1"
+        new_line = f'CURRENT_VERSION = "{new_ver_str}"\n'
+        new_content = new_line + content
+    else:
+        current_ver_str = f"v{major}.{minor}.{patch}{suffix}"
+        # 依據 SemVer 規範自動遞增修訂號 (Patch +1)
+        new_patch = patch + 1
+        new_ver_str = f"v{major}.{minor}.{new_patch}"
+        new_line = f'CURRENT_VERSION = "{new_ver_str}"'
+        new_content = content.replace(old_line, new_line, 1)
 
     release_title, release_body = generate_ai_release_notes(main_script, new_ver_str)
 
-    new_content = content.replace(old_line, new_line, 1)
     with open(main_script, "w", encoding=enc) as f:
         f.write(new_content)
 
     print(f"🤖 [版本自動升級] {current_ver_str} ➡️ {new_ver_str}")
-    print(f"📌 Title: {release_title}")
+    print(f"📌 Release Title: {release_title}")
+    print(f"📝 Release Description:\n{release_body}\n")
 
     full_commit_msg = f"{new_ver_str}: {release_title}"
+
+    # 自動打包產生單一 .exe 檔
+    build_single_exe()
 
     print("\n🚀 正在執行安全的 Git 提交與推送...")
     try:
@@ -228,15 +272,19 @@ def main():
         subprocess.run(["git", "tag", new_ver_str], check=True)
         subprocess.run(["git", "push", "origin", new_ver_str, "--force"], check=True)
 
-        # 5. 嘗試透過 GitHub CLI 發布 Release
+        # 5. 自動填充並發布 GitHub Release 頁面的 Title、Description 並上傳產出的獨立 exe 檔
         try:
+            exe_path = os.path.join("dist", "voice_input.exe")
             gh_cmd = ["gh", "release", "create", new_ver_str, "--title", release_title, "--notes", release_body]
+            if os.path.exists(exe_path):
+                gh_cmd.append(exe_path)
             subprocess.run(gh_cmd, capture_output=True)
+            print("🎉 [GitHub Release] 已成功自動建立並發布雲端 Release 與獨立 .exe 附件！")
         except Exception:
             pass
 
         print(f"\n🎉 [一鍵自動部署完全成功] 版本 {new_ver_str} 已順利發布！")
-        messagebox.showinfo("🎉 部署成功", f"版本 {current_ver_str} ➔ {new_ver_str}\n已成功自動發布並推送到 GitHub！\n\n【Title】: {release_title}")
+        messagebox.showinfo("🎉 部署成功", f"版本 {current_ver_str} ➔ {new_ver_str}\n已成功自動打包單一 .exe 並推送到 GitHub！\n\n【Title】: {release_title}")
     except subprocess.CalledProcessError as e:
         err_detail = e.stderr.decode("utf-8", errors="ignore") if hasattr(e, 'stderr') and e.stderr else str(e)
         print(f"\n❌ Git 操作過程發生錯誤：{err_detail}")

@@ -145,7 +145,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.6.5"
+CURRENT_VERSION = "v7.6.6"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -450,13 +450,17 @@ def _perform_auto_update(download_url):
             time.sleep(1.0)
 
             bat_path = os.path.join(APPDATA_DIR, "update_installer.bat")
-            # 🌟 修復 PyInstaller 安全性驗證死結：加入 timeout 以延長母處理序生命週期
+            # 🌟 徹底修復 PyInstaller 安全驗證崩潰：避開直接由舊程序派生，改用絕對路徑獨立 start 背景呼叫
             bat_script = f"""@echo off
 chcp 65001 > nul
-timeout /t 2 /nobreak > nul
+:wait_process
+tasklist /fi "imagename eq {os.path.basename(current_exe)}" 2>nul | find /i "{os.path.basename(current_exe)}" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak > nul
+    goto wait_process
+)
 move /y "{new_exe_path}" "{current_exe}"
 start "" "{current_exe}"
-timeout /t 3 /nobreak > nul
 del "%~f0"
 """
             with open(bat_path, "w", encoding="ansi") as f:
@@ -997,7 +1001,7 @@ def _toggle_chat_panel_main():
 
     theme = get_theme()
     win = tk.Toplevel(root)
-    win.title(f"AI 實時互動對話中心 ({CURRENT_VERSION})")
+    win.title(f"AI 實時對話中心 ({CURRENT_VERSION})")
     win.geometry(f"720x760+{(root.winfo_screenwidth()-720)//2}+{(root.winfo_screenheight()-760)//2}")
     win.configure(bg=theme["card_bg"])
     set_dark_title_bar(win)
@@ -1109,7 +1113,7 @@ def _toggle_chat_panel_main():
                                 root.after(0, lambda: [entry.delete(0, tk.END), entry.insert(0, polished), execute_chat_input()])
                         set_status("✨ 語音校對完成", "#98C379")
                     except Exception:
-                        set_status("⚠️ 語音辨識失敗", "#E5C07B")
+                        set_status("⚠️ 語音辨識失敗", "#E06C75")
                     finally:
                         root.after(1500, hide_status)
                 threading.Thread(target=process_worker, daemon=True).start()

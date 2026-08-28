@@ -2,6 +2,15 @@ import warnings
 warnings.filterwarnings("ignore")
 import os
 os.environ["PYTHONWARNINGS"] = "ignore"
+
+# 🌟 【TLS 憑證防呆防護】修復 PyInstaller 打包後找不到 certifi cacert.pem 的致命路徑問題
+try:
+    import certifi
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+except Exception:
+    pass
+
 import io
 import time
 import threading
@@ -145,7 +154,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.6.6"
+CURRENT_VERSION = "v7.6.7"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -450,8 +459,6 @@ def _perform_auto_update(download_url):
             time.sleep(1.0)
 
             bat_path = os.path.join(APPDATA_DIR, "update_installer.bat")
-            # 🌟 徹底解決 parent process has different executable 錯誤：
-            # 改由批次檔等待舊程序完全結束後，直接執行新 exe 檔案，避開 cmd 作為父程序的驗證衝突
             bat_script = f"""@echo off
 chcp 65001 > nul
 :wait_process
@@ -757,7 +764,7 @@ def start_recording(mode):
         stream.start()
         recording = True
         winsound.Beep(800, 120)
-        set_status("🔴 [錄音中] 請說話...", "#E06C75")
+        set_status("🔴 [錄音中] 請說話...", "#E5C07B")
         show_osd("🔴 [錄音中] 正在聆聽語音...", auto_hide=False)
     except Exception as e:
         recording = False
@@ -1888,14 +1895,13 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(ver_card, text=f"📌 本地電腦先前安裝紀錄版本：{LOCAL_PREVIOUS_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E06C75", bg=theme["widget_bg"]).pack(anchor="w")
     tk.Label(ver_card, text=f"✨ 當前系統升級執行版本：{CURRENT_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w", pady=(2, 0))
 
-    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.6.6 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
+    tk.Label(tab_ver, text=f"🔍 相較於您本地電腦的歷史舊版，{CURRENT_VERSION} 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
+        ("Certifi SSL 憑證路徑動態綁定 (v7.6.7)", "在主程式最上方引入 certifi 並動態覆寫 `REQUESTS_CA_BUNDLE` 與 `SSL_CERT_FILE`。", "徹底解決 PyInstaller 打包成單一執行檔後，因暫存區找不到 `cacert.pem` 而產生的 `OSError` 網路連線中斷問題。"),
         ("PyInstaller 執行檔安全性驗證死結根本修復 (v7.6.6)", "修改熱更新批次檔（`update_installer.bat`），改由背景等待舊程序完全卸載後，直接啟動新 `.exe`。", "徹底消除 parent process has different executable 錯誤，保障熱更新後自動重啟 100% 成功。"),
-        ("PyInstaller 安全性驗證死結修復 (Hotfix)", "在熱更新重啟邏輯中，強制延長母處理序生命週期 3 秒鐘。", "完美解決新版程式 Bootloader 因無法追蹤母處理序而觸發 Security validation failure 的系統崩潰，保障更新無縫完成。"),
         ("記憶體 OCR 管線枯竭修復 (Hotfix)", "捨棄 `[Console]::In.ReadToEnd()`，改由 f-string 將 Base64 直接注入 PowerShell 變數。", "徹底解決管線 EOF 讀取衝突，保證大尺寸截圖 100% 成功傳送至 OCR 引擎而不崩潰。"),
-        ("微小字體辨識升級 (Lanczos Upscaling)", "當截圖區域低於 400x150 時，系統自動透過 PIL 呼叫 Lanczos 演算法進行 3 倍無損放大。", "奇蹟般增強 Windows 原生 OCR 引擎對遊戲內小字體或模糊邊緣文字的靈敏度。"),
-        ("Google Gemini 原生雙引擎矩陣導入", "在核心 API 抽象層加入對 `gemini-1.5-flash`, `gemini-1.5-pro` 的支援，動態解析模型前綴發送至 Google API 端點。", "提供多雲容錯與模型備援能力，再也不怕單一供應商斷線或額度耗盡，且零套件安裝相依。")
+        ("微小字體辨識升級 (Lanczos Upscaling)", "當截圖區域低於 400x150 時，系統自動透過 PIL 呼叫 Lanczos 演算法進行 3 倍無損放大。", "奇蹟般增強 Windows 原生 OCR 引擎對遊戲內小字體或模糊邊緣文字的靈敏度。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:

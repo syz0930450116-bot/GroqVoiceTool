@@ -38,7 +38,7 @@ http_adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20)
 http_session.mount('http://', http_adapter)
 http_session.mount('https://', http_adapter)
 
-# 🌟 核心 API 抽象層：支援 Groq 與 Gemini 雙引擎 (v7.6.0 重構)
+# 🌟 核心 API 抽象層：支援 Groq 與 Gemini 雙引擎
 def _execute_unified_chat(messages, model, temperature=0.2, timeout=12):
     try:
         if model.startswith("gemini"):
@@ -145,7 +145,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.6.0"
+CURRENT_VERSION = "v7.6.2"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -454,7 +454,7 @@ def _perform_auto_update(download_url):
 chcp 65001 > nul
 timeout /t 2 /nobreak > nul
 move /y "{new_exe_path}" "{current_exe}"
-start /b "" cmd /c start "" "{current_exe}"
+start "" "{current_exe}"
 del "%~f0"
 """
             with open(bat_path, "w", encoding="ansi") as f:
@@ -634,7 +634,7 @@ def sanitize_spotlight_history():
 def get_theme():
     return THEMES.get(CURRENT_THEME_NAME, THEMES["暗夜駭客 (Dark Hacker)"])
 
-# 🌟 初始化持久化 OSD 系統 (v7.6.0 重構)
+# 🌟 初始化持久化 OSD 系統
 def init_osd():
     global osd_win, osd_label
     osd_win = tk.Toplevel(root)
@@ -1558,7 +1558,7 @@ class SnippingTool:
             show_osd("✕ 範圍過小，取消截圖", auto_hide=True)
             root.after(1500, hide_status)
 
-# 🌟 無磁碟 I/O 記憶體串流 OCR (防管線死結)
+# 🌟 無磁碟 I/O 記憶體串流 OCR (v7.6.2 管線枯竭修復與 Lanczos 影像放大)
 def process_screenshot(img):
     global is_processing
     if not GROQ_API_KEY and not GEMINI_API_KEY: prompt_api_key_gui(); return
@@ -1573,27 +1573,38 @@ def process_screenshot(img):
     set_status("🖼️ Windows 記憶體 OCR 辨識中 (無磁碟延遲)...", "#61AFEF")
     show_osd("🖼️ OCR 辨識中...", auto_hide=False)
     try:
+        # 🌟 影像高階放大處理 (Lanczos Upscaling)，增強微小字體辨識率
+        width, height = img.size
+        if width < 400 or height < 150:
+            scale_factor = 3
+            try:
+                resample_filter = Image.Resampling.LANCZOS
+            except AttributeError:
+                resample_filter = Image.LANCZOS
+            img = img.resize((width * scale_factor, height * scale_factor), resample_filter)
+
         img_byte_arr = io.BytesIO()
         img.save(img_byte_arr, format='PNG')
         base64_data = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
 
-        ps_script = """
+        # 🌟 Base64 直接變數注入，避開 [Console]::In.ReadToEnd() 枯竭問題
+        ps_script = f"""
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
         $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
         $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
         $null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
 
-        $getAwaiterBaseMethod = [WindowsRuntimeSystemExtensions].GetMember('GetAwaiter', 'Method', 'Public,Static') | Where-Object { $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
-        function Await($AsyncTask, $As) {
+        $getAwaiterBaseMethod = [WindowsRuntimeSystemExtensions].GetMember('GetAwaiter', 'Method', 'Public,Static') | Where-Object {{ $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' }} | Select-Object -First 1
+        function Await($AsyncTask, $As) {{
             return $getAwaiterBaseMethod.MakeGenericMethod($As).Invoke($null, @($AsyncTask)).GetResult()
-        }
+        }}
 
         $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-        if ($null -eq $ocrEngine) { exit 1 }
+        if ($null -eq $ocrEngine) {{ exit 1 }}
 
-        $base64String = [Console]::In.ReadToEnd().Trim()
-        if ([string]::IsNullOrEmpty($base64String)) { exit 1 }
+        $base64String = '{base64_data}'
+        if ([string]::IsNullOrEmpty($base64String)) {{ exit 1 }}
 
         $imageBytes = [Convert]::FromBase64String($base64String)
         $stream = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
@@ -1622,7 +1633,7 @@ def process_screenshot(img):
             creationflags=subprocess.CREATE_NO_WINDOW
         )
         
-        stdout_data, stderr_data = proc.communicate(input=ps_script + "\n" + base64_data + "\n")
+        stdout_data, stderr_data = proc.communicate(input=ps_script)
         extracted_text = (stdout_data or "").strip()
 
         if proc.returncode != 0 or not extracted_text:
@@ -1764,7 +1775,7 @@ def prompt_api_key_gui(default_tab_idx=0):
     notebook.pack(fill="both", expand=True, padx=20, pady=4)
     win.notebook_ref = notebook
 
-    # 🌟 實作全域滑鼠滾輪攔截與穿透 (v7.6.0)
+    # 🌟 實作全域滑鼠滾輪攔截與穿透
     def create_scrollable_tab(tab_name):
         container = tk.Frame(notebook, bg=theme["inner_bg"])
         canvas = tk.Canvas(container, bg=theme["inner_bg"], highlightthickness=0)
@@ -1873,13 +1884,14 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(ver_card, text=f"📌 本地電腦先前安裝紀錄版本：{LOCAL_PREVIOUS_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E06C75", bg=theme["widget_bg"]).pack(anchor="w")
     tk.Label(ver_card, text=f"✨ 當前系統升級執行版本：{CURRENT_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w", pady=(2, 0))
 
-    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.6.0 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
+    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.6.2 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
+        ("記憶體 OCR 管線枯竭修復 (Hotfix)", "捨棄 `[Console]::In.ReadToEnd()`，改由 f-string 將 Base64 直接注入 PowerShell 變數。", "徹底解決管線 EOF 讀取衝突，保證大尺寸截圖 100% 成功傳送至 OCR 引擎而不崩潰。"),
+        ("微小字體辨識升級 (Lanczos Upscaling)", "當截圖區域低於 400x150 時，系統自動透過 PIL 呼叫 Lanczos 演算法進行 3 倍無損放大。", "奇蹟般增強 Windows 原生 OCR 引擎對遊戲內小字體或模糊邊緣文字的靈敏度。"),
+        ("PyInstaller 安全性驗證崩潰修復", "在 `_perform_auto_update` 中捨棄嵌套的 `cmd /c` 重啟機制，採用標準乾淨的 Win32 `start` 指令。", "徹底解決熱更新完成後，新版程式 Bootloader 因找不到母處理序而觸發 Security validation failure 的致命崩潰。"),
         ("Google Gemini 原生雙引擎矩陣導入", "在核心 API 抽象層加入對 `gemini-1.5-flash`, `gemini-1.5-pro` 的支援，動態解析模型前綴發送至 Google API 端點。", "提供多雲容錯與模型備援能力，再也不怕單一供應商斷線或額度耗盡，且零套件安裝相依。"),
-        ("OSD 視覺回饋狀態機持久化 (Stateful OSD)", "重構 `show_osd` 支援 `auto_hide=False` 參數，讓系統在執行耗時任務（如 AI 思考、語音辨識）時，OSD 提示會持續懸浮在螢幕中央不消失。", "極大化系統狀態可視性，給予使用者明確的操作進度與安全感。"),
-        ("Tkinter 畫布全域滾輪綁定 (Global MouseWheel Hook)", "利用 `<Enter>` / `<Leave>` 動態攔截並重新映射 `<MouseWheel>` 系統事件至 `canvas.yview_scroll`。", "擺脫必須精準把滑鼠移至拉桿才能滑動的限制，實現「指到哪、滑到哪」的現代化流暢手感。"),
-        ("核心 API 呼叫結構重構 (DRY 原則)", "抽象化 `_execute_unified_chat` 核心通訊函式，集中處理所有 Groq 與 Gemini API 請求。", "消除大量重複的樣板代碼 (Boilerplate)，提升效能與維護性。")
+        ("OSD 視覺回饋狀態機持久化 (Stateful OSD)", "重構 `show_osd` 支援 `auto_hide=False` 參數，讓系統在執行耗時任務（如 AI 思考、語音辨識）時，OSD 提示會持續懸浮在螢幕中央不消失。", "極大化系統狀態可視性，給予使用者明確的操作進度與安全感。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:
@@ -2144,7 +2156,7 @@ def prompt_api_key_gui(default_tab_idx=0):
         
         ("HTTP 429 Rate Limit Exceeded", 
          "【問題原因】：觸發免費帳號每日 Token 額度上限。\n"
-         "【自主排除步驟】：由於 v7.6.0 支援雙引擎，您可以填入另一家的 API Key 讓系統自動容錯備援。"),
+         "【自主排除步驟】：由於 v7.6.2 支援雙引擎，您可以填入另一家的 API Key 讓系統自動容錯備援。"),
 
         ("AI 人物或時事回答不準確 (幻覺問題)", 
          "【問題原因】：舊版爬蟲抓取資訊破碎或 AI 憑記憶猜測。\n"

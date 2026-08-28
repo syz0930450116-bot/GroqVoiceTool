@@ -11,6 +11,7 @@ import subprocess
 import webbrowser
 import urllib.parse
 import requests
+from requests.adapters import HTTPAdapter
 import re
 import ctypes
 from ctypes import wintypes
@@ -24,6 +25,62 @@ from tkinter import scrolledtext, messagebox, ttk
 from PIL import Image, ImageDraw, ImageGrab
 import winsound
 import traceback
+import base64
+
+# 🌟 全域執行緒安全鎖 (Thread Safety Mutex)
+state_lock = threading.Lock()
+history_lock = threading.Lock()
+clip_lock = threading.Lock()
+
+# 🌟 初始化全域 requests Session 連線池，降低 TLS 握手與 TCP 連線延遲
+http_session = requests.Session()
+http_adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20)
+http_session.mount('http://', http_adapter)
+http_session.mount('https://', http_adapter)
+
+# 🌟 核心 API 抽象層：支援 Groq 與 Gemini 雙引擎 (v7.6.0 重構)
+def _execute_unified_chat(messages, model, temperature=0.2, timeout=12):
+    try:
+        if model.startswith("gemini"):
+            if not GEMINI_API_KEY:
+                return False, "未設定 Gemini API Key，請至設定中心填寫"
+            headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+            url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        else:
+            if not GROQ_API_KEY:
+                return False, "未設定 Groq API Key，請至設定中心填寫"
+            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+            url = "https://api.groq.com/openai/v1/chat/completions"
+
+        payload = {"model": model, "messages": messages, "temperature": temperature}
+        resp = http_session.post(url, headers=headers, json=payload, timeout=timeout)
+        
+        if resp.status_code == 200:
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            if "</think>" in raw: raw = raw.split("</think>")[-1].strip()
+            return True, to_tw_trad(raw)
+        else:
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return False, f"Exception: {str(e)}"
+
+# 🌟 剪貼簿安全存取機制 (含重試防護)
+def safe_clipboard_copy(text, retries=3, delay=0.1):
+    for _ in range(retries):
+        try:
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            time.sleep(delay)
+    return False
+
+def safe_clipboard_paste(retries=3, delay=0.1):
+    for _ in range(retries):
+        try:
+            return pyperclip.paste()
+        except Exception:
+            time.sleep(delay)
+    return ""
 
 # 🌟 視窗高解析度字體銳利化 (DPI Awareness)
 try:
@@ -34,7 +91,7 @@ except Exception:
     except Exception:
         pass
 
-# 🌟 設定 Windows 視窗原生深色標題列 (DWM Immersive Dark Mode)
+# 🌟 設定 Windows 視窗原生深色標題列
 def set_dark_title_bar(window):
     try:
         window.update()
@@ -44,6 +101,22 @@ def set_dark_title_bar(window):
         value = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), ctypes.sizeof(value))
+    except Exception:
+        pass
+
+# 🌟 設定 Windows 視窗滑鼠穿透 (Click-Through) 與無焦點防護
+def set_window_click_through(window):
+    try:
+        window.update()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if not hwnd:
+            hwnd = window.winfo_id()
+        GWL_EXSTYLE = -20
+        WS_EX_LAYERED = 0x00080000
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_NOACTIVATE = 0x08000000
+        ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
     except Exception:
         pass
 
@@ -72,7 +145,7 @@ except Exception:
         return text
 
 # ================= 設定與版本區 =================
-CURRENT_VERSION = "v7.2.7"
+CURRENT_VERSION = "v7.6.0"
 DISCORD_USERNAME = "loey3"
 DISCORD_USER_ID = "816981477946032150"
 DISCORD_PROFILE_URL = f"https://discord.com/users/{DISCORD_USER_ID}"
@@ -121,10 +194,13 @@ THEMES = {
 }
 
 MODEL_MAP = {
-    "openai/gpt-oss-20b": "openai/gpt-oss-20b (極速通用)",
-    "openai/gpt-oss-120b": "openai/gpt-oss-120b (OpenAI 高階推理)",
-    "qwen-2.5-32b": "qwen-2.5-32b (中文與事實查核能力極強)",
-    "deepseek-r1-distill-llama-70b": "deepseek-r1-distill-llama-70b (深度邏輯推理)"
+    "openai/gpt-oss-20b": "openai/gpt-oss-20b (Groq 極速通用)",
+    "openai/gpt-oss-120b": "openai/gpt-oss-120b (Groq 高階推理)",
+    "qwen-2.5-32b": "qwen-2.5-32b (Groq 中文事實查核)",
+    "deepseek-r1-distill-llama-70b": "deepseek-r1-distill-llama-70b (Groq 深度邏輯)",
+    "gemini-1.5-flash": "gemini-1.5-flash (Google 原生超低延遲)",
+    "gemini-1.5-pro": "gemini-1.5-pro (Google 原生強大推理)",
+    "gemini-2.5-flash": "gemini-2.5-flash (Google 實驗端點)"
 }
 
 SCALE_OPTIONS = {
@@ -149,8 +225,15 @@ def load_config():
         except Exception: pass
     return {}
 
+# 🌟 JSON 原子寫入
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(cfg, f, indent=4, ensure_ascii=False)
+    try:
+        tmp_file = CONFIG_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f: 
+            json.dump(cfg, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_file, CONFIG_FILE)
+    except Exception:
+        pass
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -161,25 +244,31 @@ def load_history():
 
 def save_history(hist):
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f: json.dump(hist, f, indent=4, ensure_ascii=False)
-    except Exception: pass
+        tmp_file = HISTORY_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f: 
+            json.dump(hist, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception: 
+        pass
 
 def add_history_entry(task_type, original, result):
     try:
-        history = load_history()
-        entry = {
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "type": task_type,
-            "original": original,
-            "result": result
-        }
-        history.insert(0, entry)
-        if len(history) > 50: history = history[:50]
-        save_history(history)
+        with history_lock:
+            history = load_history()
+            entry = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "type": task_type,
+                "original": original,
+                "result": result
+            }
+            history.insert(0, entry)
+            if len(history) > 50: history = history[:50]
+            save_history(history)
     except Exception: pass
 
 config = load_config()
 GROQ_API_KEY = config.get("groq_api_key", "")
+GEMINI_API_KEY = config.get("gemini_api_key", "")
 TAVILY_API_KEY = config.get("tavily_api_key", "")
 CUSTOM_PROMPT_1 = config.get("custom_prompt_1", "請幫我將這段文字翻譯為日文。")
 CUSTOM_PROMPT_2 = config.get("custom_prompt_2", "請幫我將這段文字翻譯為英文。")
@@ -203,14 +292,14 @@ def open_discord_profile():
     webbrowser.open(DISCORD_PROFILE_URL)
 
 def copy_discord_username(parent_win=None):
-    pyperclip.copy(DISCORD_USERNAME)
+    safe_clipboard_copy(DISCORD_USERNAME)
     messagebox.showinfo("複製成功", f"已複製 Discord 帳號：{DISCORD_USERNAME}\n歡迎貼上並私訊進行功能建議或反饋！", parent=parent_win)
 
-# ================= 📢 底層核心：動態遠端推播 API 廣播模組 =================
+# ================= 📢 底層核心：動態遠端推播 =================
 def fetch_remote_broadcast():
     def worker():
         try:
-            resp = requests.get(BROADCAST_API_URL, headers={"User-Agent": "GroqVoiceTool-BroadcastFetcher"}, timeout=5)
+            resp = http_session.get(BROADCAST_API_URL, headers={"User-Agent": "GroqVoiceTool-BroadcastFetcher"}, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
                 msg_id = data.get("id", "")
@@ -227,7 +316,6 @@ def fetch_remote_broadcast():
                     if root: root.after(0, lambda: _show_broadcast_gui(title, message, msg_type, url))
         except Exception:
             pass
-
     threading.Thread(target=worker, daemon=True).start()
 
 def _show_broadcast_gui(title, message, msg_type, url):
@@ -265,14 +353,14 @@ def _show_broadcast_gui(title, message, msg_type, url):
 
     tk.Button(btn_f, text="我知道了", command=bc_win.destroy, bg="#4B5263", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=14, pady=5).pack(side="right")
 
-# ================= 🔄 底層核心：自動熱更新模組 =================
+# ================= 🔄 底層核心：自動熱更新 =================
 def check_for_updates(manual=False):
     def update_worker():
         try:
             if manual: set_status("🔍 正在檢查雲端最新版本...", "#61AFEF")
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
             headers = {"User-Agent": "GroqVoiceTool-AutoUpdater"}
-            resp = requests.get(url, headers=headers, timeout=6)
+            resp = http_session.get(url, headers=headers, timeout=6)
             
             if resp.status_code == 200:
                 data = resp.json()
@@ -352,7 +440,7 @@ def _perform_auto_update(download_url):
             return
 
         new_exe_path = os.path.join(APPDATA_DIR, "GroqVoiceTool_new.exe")
-        resp = requests.get(download_url, stream=True, timeout=30)
+        resp = http_session.get(download_url, stream=True, timeout=30)
         if resp.status_code == 200:
             with open(new_exe_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -435,9 +523,13 @@ clip_btn_ref = None
 chat_panel_win = None
 ai_result_win = None
 
-# 全域截圖進行中標誌（單例保護）
-snip_active = False
+# OSD (On-Screen Display) 元件
+osd_win = None
+osd_label = None
+osd_timer = None
 
+# 全域截圖單例保護
+snip_active = False
 audio_frames = []
 
 def should_trigger_search(query):
@@ -464,7 +556,7 @@ def get_web_search_context(query):
                 "include_answer": False,
                 "max_results": 3
             }
-            resp = requests.post(url, json=payload, timeout=3.5)
+            resp = http_session.post(url, json=payload, timeout=3.5)
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
                 snippets = []
@@ -481,7 +573,7 @@ def get_web_search_context(query):
     try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"}
-        resp = requests.get(url, headers=headers, timeout=1.5)
+        resp = http_session.get(url, headers=headers, timeout=1.5)
         if resp.status_code == 200:
             snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', resp.text, re.DOTALL)
             clean_snippets = []
@@ -510,36 +602,86 @@ spotlight_history = [
 
 def sanitize_spotlight_history():
     global spotlight_history
-    sys_msg = {"role": "system", "content": get_system_prompt()}
-    if not spotlight_history:
-        spotlight_history = [sys_msg]
-        return
+    with history_lock:
+        sys_msg = {"role": "system", "content": get_system_prompt()}
+        if not spotlight_history:
+            spotlight_history = [sys_msg]
+            return
 
-    raw_dialog = spotlight_history[1:]
-    clean_dialog = []
+        raw_dialog = spotlight_history[1:]
+        clean_dialog = []
 
-    for msg in raw_dialog:
-        content = msg.get("content", "").strip()
-        role = msg.get("role", "")
-        if not content or role not in ("user", "assistant"):
-            continue
-        if clean_dialog and clean_dialog[-1]["role"] == role:
-            clean_dialog[-1] = {"role": role, "content": content}
-        else:
-            clean_dialog.append({"role": role, "content": content})
+        for msg in raw_dialog:
+            content = msg.get("content", "").strip()
+            role = msg.get("role", "")
+            if not content or role not in ("user", "assistant"):
+                continue
+            if clean_dialog and clean_dialog[-1]["role"] == role:
+                clean_dialog[-1] = {"role": role, "content": content}
+            else:
+                clean_dialog.append({"role": role, "content": content})
 
-    while clean_dialog and clean_dialog[0]["role"] != "user":
-        clean_dialog.pop(0)
-
-    if len(clean_dialog) > 12:
-        clean_dialog = clean_dialog[-12:]
         while clean_dialog and clean_dialog[0]["role"] != "user":
             clean_dialog.pop(0)
 
-    spotlight_history = [sys_msg] + clean_dialog
+        if len(clean_dialog) > 12:
+            clean_dialog = clean_dialog[-12:]
+            while clean_dialog and clean_dialog[0]["role"] != "user":
+                clean_dialog.pop(0)
+
+        spotlight_history = [sys_msg] + clean_dialog
 
 def get_theme():
     return THEMES.get(CURRENT_THEME_NAME, THEMES["暗夜駭客 (Dark Hacker)"])
+
+# 🌟 初始化持久化 OSD 系統 (v7.6.0 重構)
+def init_osd():
+    global osd_win, osd_label
+    osd_win = tk.Toplevel(root)
+    osd_win.overrideredirect(True)
+    osd_win.attributes("-topmost", True)
+    osd_win.attributes("-disabled", True)
+    osd_win.withdraw()
+    osd_label = tk.Label(osd_win, text="", font=("Microsoft JhengHei", sf(14), "bold"), padx=24, pady=12)
+    osd_label.pack()
+    set_window_click_through(osd_win)
+
+def show_osd(text, auto_hide=True):
+    if root:
+        root.after(0, _show_osd_gui, text, auto_hide)
+
+def _show_osd_gui(text, auto_hide):
+    global osd_timer
+    if osd_win is None: return
+    if osd_timer:
+        root.after_cancel(osd_timer)
+        osd_timer = None
+        
+    theme = get_theme()
+    osd_label.config(text=text, bg=theme["widget_bg"], fg=theme["accent"])
+    osd_win.configure(bg=theme["widget_bg"])
+    osd_win.update_idletasks()
+    
+    w = osd_win.winfo_reqwidth()
+    h = osd_win.winfo_reqheight()
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    osd_win.geometry(f"{w}x{h}+{(sw-w)//2}+{int(sh * 0.82)}")
+    osd_win.attributes("-alpha", 0.95)
+    osd_win.deiconify()
+    set_window_click_through(osd_win)
+    
+    def fade_out():
+        alpha = osd_win.attributes("-alpha")
+        if alpha > 0.1:
+            osd_win.attributes("-alpha", alpha - 0.1)
+            global osd_timer
+            osd_timer = root.after(35, fade_out)
+        else:
+            osd_win.withdraw()
+            
+    if auto_hide:
+        osd_timer = root.after(1500, fade_out)
 
 def init_gui():
     global root, status_win, status_label
@@ -549,12 +691,16 @@ def init_gui():
     status_win = tk.Toplevel(root)
     status_win.overrideredirect(True)
     status_win.attributes("-topmost", True)
+    status_win.attributes("-disabled", True)
     status_win.withdraw()
     
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     status_win.geometry(f"380x75+{sw - 400}+{sh - 130}")
     status_label = tk.Label(status_win, text="", font=("Microsoft JhengHei", sf(10), "bold"), fg="#FFFFFF", wraplength=360, justify="left", padx=8, pady=6)
     status_label.pack(fill="both", expand=True)
+
+    set_window_click_through(status_win)
+    init_osd()
 
     show_startup_notice()
     toggle_floating_ball()
@@ -564,7 +710,7 @@ def init_gui():
 
     threading.Thread(target=clipboard_monitor_loop, daemon=True).start()
     if TRAY_AVAILABLE: threading.Thread(target=setup_system_tray, daemon=True).start()
-    if not GROQ_API_KEY: root.after(1500, prompt_api_key_gui)
+    if not GROQ_API_KEY and not GEMINI_API_KEY: root.after(1500, prompt_api_key_gui)
 
 def update_status_ui(text, bg_color):
     if status_win and status_label:
@@ -582,11 +728,12 @@ def hide_status():
     if root: root.after(0, hide_status_ui)
 
 def show_startup_notice():
-    set_status(f"🚀 {CURRENT_VERSION} Groq AI 懸浮球已就緒", "#98C379")
+    set_status(f"🚀 {CURRENT_VERSION} AI 懸浮球已就緒", "#98C379")
     if root: root.after(2000, hide_status)
 
 def exit_program():
     set_status("👋 助理已關閉", "#E06C75")
+    show_osd("👋 系統正在關閉...", auto_hide=True)
     time.sleep(0.8)
     if tray_icon: tray_icon.stop()
     os._exit(0)
@@ -604,10 +751,12 @@ def start_recording(mode):
         recording = True
         winsound.Beep(800, 120)
         set_status("🔴 [錄音中] 請說話...", "#E06C75")
+        show_osd("🔴 [錄音中] 正在聆聽語音...", auto_hide=False)
     except Exception as e:
         recording = False
         stream = None
         trigger_cdn_error_modal("麥克風啟動失敗", str(e))
+        show_osd("⚠️ 麥克風啟動失敗", auto_hide=True)
 
 def stop_recording():
     global recording, stream
@@ -623,6 +772,7 @@ def stop_recording():
         threading.Thread(target=process_whisper_and_proofread, args=(current_mode,), daemon=True).start()
     else:
         set_status("⚠️ 未收到語音數據", "#E5C07B")
+        show_osd("⚠️ 未收到語音數據", auto_hide=True)
         root.after(2000, hide_status)
 
 def trigger_mode(mode):
@@ -637,11 +787,19 @@ def trigger_mode(mode):
 def process_whisper_and_proofread(mode):
     global is_processing
     if not GROQ_API_KEY:
-        set_status("⚠️ 未設定 API Key", "#E06C75")
+        set_status("⚠️ 未設定 Groq API Key (Whisper 必須)", "#E06C75")
+        show_osd("⚠️ 缺少 Groq API Key", auto_hide=True)
         root.after(1500, hide_status); prompt_api_key_gui(); return
 
-    is_processing = True
+    with state_lock:
+        if is_processing:
+            set_status("⏳ 系統處理中，請稍候...", "#E5C07B")
+            root.after(1500, hide_status)
+            return
+        is_processing = True
+
     set_status("⚡ Groq Whisper 語音辨識中...", "#61AFEF")
+    show_osd("⚡ AI 語音辨識與精修中...", auto_hide=False)
     try:
         audio_data = np.concatenate(audio_frames, axis=0)
         wav_io = io.BytesIO()
@@ -652,81 +810,74 @@ def process_whisper_and_proofread(mode):
         files = {"file": ("speech.wav", wav_bytes, "audio/wav")}
         data = {"model": "whisper-large-v3", "language": "zh", "temperature": "0", "response_format": "json"}
         
-        w_resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
+        w_resp = http_session.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=12)
         if w_resp.status_code == 200:
             raw_text = to_tw_trad(w_resp.json().get("text", "").strip())
             if not raw_text:
                 set_status("⚠️ 未偵測到清晰語音", "#E5C07B")
-                root.after(1500, hide_status); return
+                show_osd("⚠️ 未偵測到語音", auto_hide=True)
+                return
 
             set_status("✨ AI 智慧精修校對中...", "#C678DD")
             sys_prompt = "Translate Chinese speech to natural English." if mode == "en" else "修復繁體中文同音錯字並補齊標點符號，不要回答內容，直接輸出校對後文字。"
 
-            candidate_models = [MODEL_VOICE, "openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b"]
+            candidate_models = [MODEL_VOICE, "gemini-1.5-flash", "openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen-2.5-32b", "deepseek-r1-distill-llama-70b"]
             unique_candidate_models = []
             for m in candidate_models:
                 if m not in unique_candidate_models: unique_candidate_models.append(m)
 
             polished_text = ""
             for model_name in unique_candidate_models:
-                payload = {"model": model_name, "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"請校對：{raw_text}"}], "temperature": 0.0}
-                p_resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=10)
-                if p_resp.status_code == 200:
-                    raw_content = p_resp.json()["choices"][0]["message"]["content"].strip()
-                    if "</think>" in raw_content: raw_content = raw_content.split("</think>")[-1].strip()
-                    polished_text = to_tw_trad(raw_content)
+                success, result = _execute_unified_chat([{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"請校對：{raw_text}"}], model_name, 0.0, 10)
+                if success:
+                    polished_text = result
                     break
 
             if polished_text:
-                pyperclip.copy(polished_text); time.sleep(0.05); send_paste()
+                safe_clipboard_copy(polished_text); time.sleep(0.05); send_paste()
                 add_history_entry("語音聽寫校對", raw_text, polished_text)
                 set_status("✨ 辨識完成，已自動貼上！", "#98C379")
+                show_osd("✅ 語音輸入完成，已貼上", auto_hide=True)
             else:
-                pyperclip.copy(raw_text); send_paste()
+                safe_clipboard_copy(raw_text); send_paste()
                 set_status("⚠️ AI 校對異常，已貼出原始文字", "#E5C07B")
+                show_osd("⚠️ 精修失敗，輸出原文", auto_hide=True)
         else:
             trigger_cdn_error_modal(f"Groq API 錯誤 (HTTP {w_resp.status_code})", w_resp.text[:200])
+            show_osd("❌ 語音服務異常", auto_hide=True)
     except Exception as e:
         trigger_cdn_error_modal("語音處理例外錯誤", traceback.format_exc())
+        show_osd("❌ 系統例外錯誤", auto_hide=True)
     finally:
-        is_processing = False
+        with state_lock:
+            is_processing = False
         root.after(2500, hide_status)
 
-# ================= 🛡️ 核心防護與「靜默全自動自我修復」引擎 (v7.2.4) =================
+# ================= 🛡️ 核心防護與「靜默全自動自我修復」 =================
 def auto_execute_system_repair():
-    """第一層：清理殘留 Task、釋放連線與刷新關鍵變數"""
     try:
         subprocess.run(["taskkill", "/F", "/IM", "powershell.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         global is_processing, snip_active
-        is_processing = False
-        snip_active = False
+        with state_lock:
+            is_processing = False
+            snip_active = False
         set_status("🛠️ 自我修復：核心組件已重置！", "#98C379")
+        show_osd("🛠️ 系統組件已重置", auto_hide=True)
         root.after(2500, hide_status)
         return True
     except Exception:
         return False
 
 def trigger_cdn_error_modal(title, err_msg):
-    """全自動靜默修復引擎：背景自動呼叫 AI 分析並自動套用修復策略"""
     def _repair_and_diagnose_flow():
         set_status("🤖 AI 自動修復引擎啟動中...", "#61AFEF")
         auto_execute_system_repair()
 
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         prompt = f"以下是系統捕捉到的 Exception/Error 日誌：\n{err_msg}\n\n請以簡短 2 句話繁體中文說明原因並給予建議。"
-        payload = {
-            "model": MODEL_SELECTION,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1
-        }
-        
-        ai_diagnosis = ""
         try:
-            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=8)
-            if resp.status_code == 200:
-                raw = resp.json()["choices"][0]["message"]["content"].strip()
-                if "</think>" in raw: raw = raw.split("</think>")[-1].strip()
-                ai_diagnosis = to_tw_trad(raw)
+            success, result = _execute_unified_chat([{"role": "user", "content": prompt}], MODEL_SELECTION, 0.1, 8)
+            if success: ai_diagnosis = result
+            else: ai_diagnosis = "無法取得 AI 連線診斷，可能為網路斷線或 API Key 額度耗盡。"
         except Exception:
             ai_diagnosis = "無法取得 AI 連線診斷，可能為網路斷線或 API Key 額度耗盡。"
 
@@ -763,35 +914,80 @@ def trigger_cdn_error_modal(title, err_msg):
 
     threading.Thread(target=_repair_and_diagnose_flow, daemon=True).start()
 
-def release_mod_keys():
+# ================= ⌨️ Win32 SendInput 硬體級鍵盤模擬引擎 =================
+PUL = ctypes.POINTER(ctypes.c_ulong)
+class KeyBdInput(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", PUL)]
+
+class HardwareInput(ctypes.Structure):
+    _fields_ = [("uMsg", ctypes.c_ulong),
+                ("wParamL", ctypes.c_short),
+                ("wParamH", ctypes.c_ushort)]
+
+class MouseInput(ctypes.Structure):
+    _fields_ = [("dx", ctypes.c_long),
+                ("dy", ctypes.c_long),
+                ("mouseData", ctypes.c_ulong),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", PUL)]
+
+class Input_I(ctypes.Union):
+    _fields_ = [("ki", KeyBdInput),
+                ("mi", MouseInput),
+                ("hi", HardwareInput)]
+
+class Input(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong),
+                ("ii", Input_I)]
+
+def send_key(vk_code, up=False):
+    extra = ctypes.c_ulong(0)
+    ii_ = Input_I()
+    flags = 0x0002 if up else 0x0000
+    ii_.ki = KeyBdInput(vk_code, 0, flags, 0, ctypes.pointer(extra))
+    x = Input(ctypes.c_ulong(1), ii_)
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
+
+def wait_for_modifier_release(timeout=2.0):
     user32 = ctypes.windll.user32
-    for k in (0x12, 0x10, 0x11): user32.keybd_event(k, 0, 2, 0)
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if not ((user32.GetAsyncKeyState(0x12) & 0x8000) or 
+                (user32.GetAsyncKeyState(0x11) & 0x8000) or 
+                (user32.GetAsyncKeyState(0x10) & 0x8000) or 
+                (user32.GetAsyncKeyState(0x5B) & 0x8000) or 
+                (user32.GetAsyncKeyState(0x5C) & 0x8000)):
+            break
+        time.sleep(0.01)
 
 def send_paste():
-    release_mod_keys()
+    wait_for_modifier_release()
+    time.sleep(0.05)
+    send_key(0x11, up=False) # CTRL down
+    send_key(0x56, up=False) # V down
     time.sleep(0.02)
-    ctypes.windll.user32.keybd_event(0x11, 0, 0, 0)
-    ctypes.windll.user32.keybd_event(0x56, 0, 0, 0)
-    time.sleep(0.02)
-    ctypes.windll.user32.keybd_event(0x56, 0, 2, 0)
-    ctypes.windll.user32.keybd_event(0x11, 0, 2, 0)
+    send_key(0x56, up=True)  # V up
+    send_key(0x11, up=True)  # CTRL up
 
 def send_copy():
-    user32 = ctypes.windll.user32
-    while user32.GetAsyncKeyState(0x12) & 0x8000: time.sleep(0.02)
-    release_mod_keys()
-    time.sleep(0.1)
-    user32.keybd_event(0x11, 0, 0, 0)
-    user32.keybd_event(0x43, 0, 0, 0)
+    wait_for_modifier_release()
+    time.sleep(0.05)
+    send_key(0x11, up=False) # CTRL down
+    send_key(0x43, up=False) # C down
     time.sleep(0.03)
-    user32.keybd_event(0x43, 0, 2, 0)
-    user32.keybd_event(0x11, 0, 2, 0)
+    send_key(0x43, up=True)  # C up
+    send_key(0x11, up=True)  # CTRL up
 
 def toggle_chat_panel(): root.after(0, _toggle_chat_panel_main)
 
 def _toggle_chat_panel_main():
     global chat_panel_win
-    if not GROQ_API_KEY: prompt_api_key_gui(); return
+    if not GROQ_API_KEY and not GEMINI_API_KEY: prompt_api_key_gui(); return
     if chat_panel_win is not None:
         try: chat_panel_win.destroy()
         except Exception: pass
@@ -799,18 +995,19 @@ def _toggle_chat_panel_main():
 
     theme = get_theme()
     win = tk.Toplevel(root)
-    win.title(f"Groq AI 實時互動對話中心 ({CURRENT_VERSION})")
+    win.title(f"AI 實時互動對話中心 ({CURRENT_VERSION})")
     win.geometry(f"720x760+{(root.winfo_screenwidth()-720)//2}+{(root.winfo_screenheight()-760)//2}")
     win.configure(bg=theme["card_bg"])
     set_dark_title_bar(win)
 
     header_frame = tk.Frame(win, bg=theme["card_bg"])
     header_frame.pack(fill="x", padx=16, pady=(14, 8))
-    tk.Label(header_frame, text="💬 Groq AI 實時對話 🌐", font=("Microsoft JhengHei", sf(13), "bold"), fg=theme["accent"], bg=theme["card_bg"]).pack(side="left")
+    tk.Label(header_frame, text="💬 雙引擎 AI 實時對話 🌐", font=("Microsoft JhengHei", sf(13), "bold"), fg=theme["accent"], bg=theme["card_bg"]).pack(side="left")
 
     def clear_chat_memory():
         global spotlight_history
-        spotlight_history = [{"role": "system", "content": get_system_prompt()}]
+        with history_lock:
+            spotlight_history = [{"role": "system", "content": get_system_prompt()}]
         chat_box.config(state="normal"); chat_box.delete("1.0", tk.END); chat_box.insert(tk.END, "系統：對話紀錄已重置。\n\n"); chat_box.config(state="disabled")
         set_status("🧹 對話紀錄已清空", "#98C379"); root.after(1500, hide_status)
 
@@ -819,9 +1016,10 @@ def _toggle_chat_panel_main():
     chat_box = scrolledtext.ScrolledText(win, font=("Microsoft JhengHei", sf(11)), wrap="word", bg=theme["inner_bg"], fg=theme["widget_fg"], padx=8, pady=8)
     chat_box.pack(fill="both", expand=True, padx=16, pady=4)
     
-    for msg in spotlight_history:
-        if msg.get("role") == "user": chat_box.insert(tk.END, f"👤 你：\n{msg.get('content')}\n\n")
-        elif msg.get("role") == "assistant" and msg.get("content"): chat_box.insert(tk.END, f"🤖 AI 助理：\n{msg.get('content')}\n\n")
+    with history_lock:
+        for msg in spotlight_history:
+            if msg.get("role") == "user": chat_box.insert(tk.END, f"👤 你：\n{msg.get('content')}\n\n")
+            elif msg.get("role") == "assistant" and msg.get("content"): chat_box.insert(tk.END, f"🤖 AI 助理：\n{msg.get('content')}\n\n")
     chat_box.config(state="disabled"); chat_box.see(tk.END)
 
     status_tip = tk.Label(win, text="💡 提示：智慧 Tavily 搜尋機制，僅在提問時精準查證，閒聊不打擾。", font=("Microsoft JhengHei", sf(10)), fg="#98C379", bg=theme["card_bg"])
@@ -838,10 +1036,11 @@ def _toggle_chat_panel_main():
 
     def execute_chat_input(event=None):
         global is_processing
-        if is_processing:
-            set_status("⏳ AI 思考中，請稍候...", "#E5C07B")
-            root.after(1500, hide_status)
-            return
+        with state_lock:
+            if is_processing:
+                set_status("⏳ AI 思考中，請稍候...", "#E5C07B")
+                root.after(1500, hide_status)
+                return
 
         text = entry.get().strip()
         if not text or text.startswith("輸入對話"): return
@@ -890,24 +1089,21 @@ def _toggle_chat_panel_main():
                 audio_data = np.concatenate(panel_frames, axis=0)
                 set_status("⚡ 語音辨識與 AI 校對中...", "#61AFEF")
                 def process_worker():
+                    if not GROQ_API_KEY:
+                        set_status("⚠️ 面板語音需要 Groq API", "#E06C75")
+                        return
                     try:
                         wav_io = io.BytesIO()
                         write(wav_io, SAMPLE_RATE, (audio_data * 32767).astype(np.int16))
                         headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
                         files = {"file": ("panel_voice.wav", wav_io.getvalue(), "audio/wav")}
-                        resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data={"model": "whisper-large-v3", "language": "zh"}, timeout=12)
+                        resp = http_session.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data={"model": "whisper-large-v3", "language": "zh"}, timeout=12)
                         if resp.status_code == 200:
                             raw_txt = to_tw_trad(resp.json().get("text", "").strip())
                             if raw_txt:
                                 sys_prompt = "修復繁體中文同音錯字並補齊標點符號，不要回答內容，直接輸出校對後文字。"
-                                payload = {"model": MODEL_VOICE, "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"請校對：{raw_txt}"}], "temperature": 0.0}
-                                p_resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=8)
-                                polished = raw_txt
-                                if p_resp.status_code == 200:
-                                    rc = p_resp.json()["choices"][0]["message"]["content"].strip()
-                                    if "</think>" in rc: rc = rc.split("</think>")[-1].strip()
-                                    polished = to_tw_trad(rc)
-                                
+                                success, result = _execute_unified_chat([{"role": "system", "content": sys_prompt}, {"role": "user", "content": f"請校對：{raw_txt}"}], MODEL_VOICE, 0.0, 8)
+                                polished = result if success else raw_txt
                                 root.after(0, lambda: [entry.delete(0, tk.END), entry.insert(0, polished), execute_chat_input()])
                         set_status("✨ 語音校對完成", "#98C379")
                     except Exception:
@@ -925,7 +1121,8 @@ def _toggle_chat_panel_main():
 
 def process_chat_logic(query, chat_box):
     global spotlight_history, is_processing
-    is_processing = True
+    with state_lock:
+        is_processing = True
     
     is_search_needed = should_trigger_search(query)
     if is_search_needed:
@@ -936,23 +1133,36 @@ def process_chat_logic(query, chat_box):
     try:
         web_context = get_web_search_context(query) if is_search_needed else ""
 
-        spotlight_history.append({"role": "user", "content": query})
+        with history_lock:
+            spotlight_history.append({"role": "user", "content": query})
         sanitize_spotlight_history()
 
-        api_messages = [dict(m) for m in spotlight_history]
+        with history_lock:
+            api_messages = [dict(m) for m in spotlight_history]
+            
         if web_context and api_messages and api_messages[-1]["role"] == "user":
             api_messages[-1]["content"] = f"【實時網路權威檢索資料】：\n{web_context}\n\n【使用者提問】：\n{query}"
 
-        candidate_models = [MODEL_CHAT, "qwen-2.5-32b", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "deepseek-r1-distill-llama-70b"]
+        candidate_models = [MODEL_CHAT, "gemini-1.5-flash", "qwen-2.5-32b", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "deepseek-r1-distill-llama-70b"]
         unique_candidate_models = []
         for m in candidate_models:
             if m not in unique_candidate_models: unique_candidate_models.append(m)
 
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         success = False
         last_error_text = ""
 
         for model_name in unique_candidate_models:
+            is_gemini = model_name.startswith("gemini")
+            if is_gemini and not GEMINI_API_KEY: continue
+            if not is_gemini and not GROQ_API_KEY: continue
+
+            if is_gemini:
+                headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+                url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            else:
+                headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+                url = "https://api.groq.com/openai/v1/chat/completions"
+
             payload = {
                 "model": model_name,
                 "messages": api_messages,
@@ -960,51 +1170,54 @@ def process_chat_logic(query, chat_box):
                 "stream": True
             }
 
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=18)
+            try:
+                resp = http_session.post(url, headers=headers, json=payload, stream=True, timeout=18)
+                full_reply = ""
+                if resp.status_code == 200:
+                    in_think = False
+                    for line in resp.iter_lines():
+                        if line:
+                            line_str = line.decode("utf-8").strip()
+                            if line_str.startswith("data: "):
+                                data_content = line_str[6:].strip()
+                                if data_content == "[DONE]": break
+                                try:
+                                    chunk_json = json.loads(data_content)
+                                    delta = chunk_json["choices"][0]["delta"].get("content", "")
+                                    if delta:
+                                        if "<think>" in delta: in_think = True; continue
+                                        if "</think>" in delta: in_think = False; continue
+                                        if not in_think:
+                                            chunk_trad = to_tw_trad(delta)
+                                            full_reply += chunk_trad
+                                            def append_chunk(c=chunk_trad):
+                                                if chat_box and chat_box.winfo_exists():
+                                                    chat_box.config(state="normal")
+                                                    chat_box.insert(tk.END, c)
+                                                    chat_box.config(state="disabled")
+                                                    chat_box.see(tk.END)
+                                            if root: root.after(0, append_chunk)
+                                except Exception: pass
+                    
+                    def finalize_success():
+                        if chat_box and chat_box.winfo_exists():
+                            chat_box.config(state="normal")
+                            chat_box.insert(tk.END, "\n\n")
+                            chat_box.config(state="disabled")
+                            chat_box.see(tk.END)
+                    if root: root.after(0, finalize_success)
 
-            full_reply = ""
-            if resp.status_code == 200:
-                in_think = False
-                for line in resp.iter_lines():
-                    if line:
-                        line_str = line.decode("utf-8").strip()
-                        if line_str.startswith("data: "):
-                            data_content = line_str[6:].strip()
-                            if data_content == "[DONE]": break
-                            try:
-                                chunk_json = json.loads(data_content)
-                                delta = chunk_json["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    if "<think>" in delta: in_think = True; continue
-                                    if "</think>" in delta: in_think = False; continue
-                                    if not in_think:
-                                        chunk_trad = to_tw_trad(delta)
-                                        full_reply += chunk_trad
-                                        def append_chunk(c=chunk_trad):
-                                            if chat_box and chat_box.winfo_exists():
-                                                chat_box.config(state="normal")
-                                                chat_box.insert(tk.END, c)
-                                                chat_box.config(state="disabled")
-                                                chat_box.see(tk.END)
-                                        if root: root.after(0, append_chunk)
-                            except Exception: pass
-                
-                def finalize_success():
-                    if chat_box and chat_box.winfo_exists():
-                        chat_box.config(state="normal")
-                        chat_box.insert(tk.END, "\n\n")
-                        chat_box.config(state="disabled")
-                        chat_box.see(tk.END)
-                if root: root.after(0, finalize_success)
-
-                if full_reply.strip():
-                    spotlight_history.append({"role": "assistant", "content": full_reply})
-                    add_history_entry("AI 實時對話", query, full_reply)
-                success = True
-                break
-            else:
-                last_error_text = f"HTTP {resp.status_code}: {resp.text[:150]}"
+                    if full_reply.strip():
+                        with history_lock:
+                            spotlight_history.append({"role": "assistant", "content": full_reply})
+                        add_history_entry("AI 實時對話", query, full_reply)
+                    success = True
+                    break
+                else:
+                    last_error_text = f"HTTP {resp.status_code}: {resp.text[:150]}"
+                    continue
+            except Exception as req_e:
+                last_error_text = str(req_e)
                 continue
 
         if not success:
@@ -1016,8 +1229,9 @@ def process_chat_logic(query, chat_box):
                     chat_box.config(state="disabled")
                     chat_box.see(tk.END)
             if root: root.after(0, print_err)
-            if spotlight_history and spotlight_history[-1]["role"] == "user":
-                spotlight_history.pop()
+            with history_lock:
+                if spotlight_history and spotlight_history[-1]["role"] == "user":
+                    spotlight_history.pop()
 
     except Exception as e:
         err_msg = f"❌ 系統連線例外錯誤：{str(e)}\n\n"
@@ -1028,21 +1242,27 @@ def process_chat_logic(query, chat_box):
                 chat_box.config(state="disabled")
                 chat_box.see(tk.END)
         if root: root.after(0, print_exc)
-        if spotlight_history and spotlight_history[-1]["role"] == "user":
-            spotlight_history.pop()
+        with history_lock:
+            if spotlight_history and spotlight_history[-1]["role"] == "user":
+                spotlight_history.pop()
     finally:
-        is_processing = False
+        with state_lock:
+            is_processing = False
         hide_status()
 
 def toggle_auto_clipboard():
     global auto_clipboard_enabled, last_clipboard_text
     auto_clipboard_enabled = not auto_clipboard_enabled
     if auto_clipboard_enabled:
-        try: last_clipboard_text = pyperclip.paste().strip()
-        except Exception: last_clipboard_text = ""
-        set_status("📋 自動剪貼簿翻譯：已開啟", "#56B6C2"); winsound.Beep(1000, 100)
+        with clip_lock:
+            last_clipboard_text = safe_clipboard_paste().strip()
+        set_status("📋 自動剪貼簿翻譯：已開啟", "#56B6C2")
+        show_osd("📋 自動剪貼翻譯：已開啟", auto_hide=True)
+        winsound.Beep(1000, 100)
     else:
-        set_status("📋 自動剪貼簿翻譯：已關閉", "#E5C07B"); winsound.Beep(500, 100)
+        set_status("📋 自動剪貼簿翻譯：已關閉", "#E5C07B")
+        show_osd("📋 自動剪貼翻譯：已關閉", auto_hide=True)
+        winsound.Beep(500, 100)
     root.after(1500, hide_status)
     root.after(0, update_clip_button_appearance)
 
@@ -1058,40 +1278,46 @@ def clipboard_monitor_loop():
     global last_clipboard_text
     while True:
         time.sleep(0.8)
-        if not auto_clipboard_enabled or is_paused or is_processing or not GROQ_API_KEY: continue
+        with state_lock:
+            proc_state = is_processing
+        if not auto_clipboard_enabled or is_paused or proc_state or (not GROQ_API_KEY and not GEMINI_API_KEY): continue
         try:
-            current_text = pyperclip.paste().strip()
-            if current_text and current_text != last_clipboard_text:
-                if len(current_text) < 2000:
-                    last_clipboard_text = current_text
-                    threading.Thread(target=process_auto_clipboard, args=(current_text,), daemon=True).start()
+            current_text = safe_clipboard_paste().strip()
+            with clip_lock:
+                if current_text and current_text != last_clipboard_text:
+                    if len(current_text) < 2000:
+                        last_clipboard_text = current_text
+                        threading.Thread(target=process_auto_clipboard, args=(current_text,), daemon=True).start()
         except Exception: pass
 
 def process_auto_clipboard(text):
     global last_clipboard_text, is_processing
-    is_processing = True
+    with state_lock:
+        is_processing = True
     set_status("📋 背景翻譯中...", "#56B6C2")
+    show_osd("📋 背景剪貼簿翻譯中...", auto_hide=False)
     try:
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         sys_prompt = "將輸入文字精準翻譯為流暢繁體中文。只需輸出翻譯結果。"
-        payload = {"model": MODEL_SELECTION, "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}], "temperature": 0.2}
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=10)
-        if resp.status_code == 200:
-            raw_content = resp.json()["choices"][0]["message"]["content"].strip()
-            if "</think>" in raw_content: raw_content = raw_content.split("</think>")[-1].strip()
-            translated = to_tw_trad(raw_content)
-            if translated:
-                pyperclip.copy(translated); last_clipboard_text = translated
-                add_history_entry("自動剪貼簿翻譯", text, translated)
-                set_status("📋 翻譯完成並已覆蓋剪貼簿", "#98C379"); winsound.Beep(1200, 80)
-                root.after(1500, hide_status)
-        else:
-            trigger_cdn_error_modal(f"自動剪貼簿 API 錯誤 HTTP {resp.status_code}", resp.text[:200])
+        success, result = _execute_unified_chat([{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}], MODEL_SELECTION, 0.2, 10)
+        if success and result:
+            safe_clipboard_copy(result)
+            with clip_lock:
+                last_clipboard_text = result
+            add_history_entry("自動剪貼簿翻譯", text, result)
+            set_status("📋 翻譯完成並已覆蓋剪貼簿", "#98C379")
+            show_osd("✅ 剪貼簿翻譯完成", auto_hide=True)
+            winsound.Beep(1200, 80)
+            root.after(1500, hide_status)
+        elif not success:
+            trigger_cdn_error_modal("自動剪貼簿 API 錯誤", result)
+            show_osd("❌ 翻譯 API 錯誤", auto_hide=True)
     except Exception:
-        pass
-    finally: is_processing = False
+        show_osd("❌ 翻譯發生例外", auto_hide=True)
+    finally:
+        with state_lock:
+            is_processing = False
 
-# 🌟 iPhone 風格懸浮球 (AssistiveTouch) 實現
+# 🌟 iPhone 風格懸浮球
 def toggle_floating_ball(): root.after(0, _toggle_floating_ball_main)
 
 def refresh_floating_widget():
@@ -1164,7 +1390,7 @@ def _toggle_floating_ball_main():
         canvas.bind("<ButtonRelease-1>", on_release)
 
         floating_ball_win = ball_win
-        set_status(f"✨ {CURRENT_VERSION} Groq AI 懸浮球已啟動", "#98C379")
+        set_status(f"✨ {CURRENT_VERSION} 雙引擎 AI 懸浮球已啟動", "#98C379")
         root.after(1500, hide_status)
 
 def toggle_ball_menu(ball_win):
@@ -1227,23 +1453,31 @@ def setup_system_tray():
         pystray.MenuItem("📌 切換懸浮球顯示/隱藏", lambda icon, item: toggle_floating_ball()),
         pystray.MenuItem("👋 結束程式", lambda icon, item: exit_program())
     )
-    tray_icon = pystray.Icon("GroqVoiceTool", create_tray_image(), "Groq AI 助理", menu)
+    tray_icon = pystray.Icon("GroqVoiceTool", create_tray_image(), "雙引擎 AI 助理", menu)
     tray_icon.run()
 
 def toggle_pause_mode():
     global is_paused
-    is_paused = not is_paused
-    if is_paused: set_status("⏸️ 助理已暫停", "#E5C07B")
-    else: set_status("▶️ 助理已恢復", "#98C379"); root.after(1500, hide_status)
+    with state_lock:
+        is_paused = not is_paused
+        current_pause_state = is_paused
+    if current_pause_state: 
+        set_status("⏸️ 助理已暫停", "#E5C07B")
+        show_osd("⏸️ 系統已暫停 (防護開啟)", auto_hide=True)
+    else: 
+        set_status("▶️ 助理已恢復", "#98C379")
+        show_osd("▶️ 系統已恢復", auto_hide=True)
+        root.after(1500, hide_status)
 
-# 🌟 重構截圖引擎：加入單例鎖定 (snip_active) 與頂部提示列 (Win+Shift+S 風格)
+# 🌟 截圖引擎 (單例鎖定 snip_active)
 class SnippingTool:
     def __init__(self, mode="translate"):
         global snip_active
-        if snip_active:
-            return  # 🌟 若已有截圖遮罩在運作，自動忽略防重複觸發
+        with state_lock:
+            if snip_active:
+                return
+            snip_active = True
 
-        snip_active = True
         set_status("📸 [截圖進行中] 請拖曳框選區域...", "#61AFEF")
         self.mode = mode
         self.full_img = ImageGrab.grab(all_screens=True)
@@ -1257,7 +1491,6 @@ class SnippingTool:
         self.canvas = tk.Canvas(self.snip_win, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
-        # 🌟 頂部 Win+Shift+S 風格提示條
         sw = self.snip_win.winfo_screenwidth()
         tip_frame = tk.Frame(self.snip_win, bg="#21252B", padx=16, pady=8, bd=1, relief="solid")
         tip_frame.place(relx=0.5, y=30, anchor="n")
@@ -1272,10 +1505,12 @@ class SnippingTool:
 
     def cancel_snip(self, event=None):
         global snip_active
-        snip_active = False
+        with state_lock:
+            snip_active = False
         try: self.snip_win.destroy()
         except Exception: pass
         set_status("✕ 已取消截圖", "#E5C07B")
+        show_osd("✕ 取消截圖", auto_hide=True)
         root.after(1500, hide_status)
 
     def on_press(self, event):
@@ -1299,7 +1534,9 @@ class SnippingTool:
         
         try: self.snip_win.destroy()
         except Exception: pass
-        snip_active = False  # 🌟 框選結束，釋放鎖定
+        
+        with state_lock:
+            snip_active = False
         
         rx1, rx2 = min(x1, x2), max(x1, x2)
         ry1, ry2 = min(y1, y2), max(y1, y2)
@@ -1318,87 +1555,120 @@ class SnippingTool:
             root.after(100, lambda: threading.Thread(target=process_screenshot, args=(cropped_img,), daemon=True).start())
         else:
             set_status("✕ 框選區域過小，已取消", "#E5C07B")
+            show_osd("✕ 範圍過小，取消截圖", auto_hide=True)
             root.after(1500, hide_status)
 
+# 🌟 無磁碟 I/O 記憶體串流 OCR (防管線死結)
 def process_screenshot(img):
     global is_processing
-    if not GROQ_API_KEY: prompt_api_key_gui(); return
+    if not GROQ_API_KEY and not GEMINI_API_KEY: prompt_api_key_gui(); return
 
-    is_processing = True
-    set_status("🖼️ Windows 內建 OCR 辨識中...", "#61AFEF")
+    with state_lock:
+        if is_processing:
+            set_status("⏳ 系統處理中，請稍候...", "#E5C07B")
+            root.after(1500, hide_status)
+            return
+        is_processing = True
+
+    set_status("🖼️ Windows 記憶體 OCR 辨識中 (無磁碟延遲)...", "#61AFEF")
+    show_osd("🖼️ OCR 辨識中...", auto_hide=False)
     try:
-        temp_img_path = os.path.abspath(os.path.join(SCREENSHOT_DIR, "temp_ocr.png"))
-        img.save(temp_img_path)
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        base64_data = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
 
-        ps_script = f"""
+        ps_script = """
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+        $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
         $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
         $null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType = WindowsRuntime]
-        $null = [Windows.Storage.Streams.RandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 
-        $getAwaiterBaseMethod = [WindowsRuntimeSystemExtensions].GetMember('GetAwaiter', 'Method', 'Public,Static') | Where-Object {{ $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' }} | Select-Object -First 1
-        function Await($AsyncTask, $As) {{
+        $getAwaiterBaseMethod = [WindowsRuntimeSystemExtensions].GetMember('GetAwaiter', 'Method', 'Public,Static') | Where-Object { $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+        function Await($AsyncTask, $As) {
             return $getAwaiterBaseMethod.MakeGenericMethod($As).Invoke($null, @($AsyncTask)).GetResult()
-        }}
+        }
 
         $ocrEngine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-        if ($null -eq $ocrEngine) {{ exit 1 }}
+        if ($null -eq $ocrEngine) { exit 1 }
 
-        $storageFile = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('{temp_img_path}')) ([Windows.Storage.StorageFile])
-        $fileStream = Await ($storageFile.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-        $bitmapDecoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($fileStream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $base64String = [Console]::In.ReadToEnd().Trim()
+        if ([string]::IsNullOrEmpty($base64String)) { exit 1 }
+
+        $imageBytes = [Convert]::FromBase64String($base64String)
+        $stream = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
+        $dataWriter = [Windows.Storage.Streams.DataWriter]::new($stream)
+        $dataWriter.WriteBytes($imageBytes)
+        Await ($dataWriter.StoreAsync()) ([uint32]) | Out-Null
+        $dataWriter.FlushAsync().GetResults() | Out-Null
+        $dataWriter.DetachStream() | Out-Null
+        $stream.Seek(0) | Out-Null
+
+        $bitmapDecoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
         $softwareBitmap = Await ($bitmapDecoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
         $ocrResult = Await ($ocrEngine.RecognizeAsync($softwareBitmap)) ([Windows.Media.Ocr.OcrResult])
+        $stream.Dispose()
 
         $ocrResult.Text
         """
 
-        ps_file_path = os.path.abspath(os.path.join(SCREENSHOT_DIR, "ocr_script.ps1"))
-        with open(ps_file_path, "w", encoding="utf-8") as f: f.write(ps_script)
-
-        proc = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps_file_path], capture_output=True, text=True, encoding="utf-8", errors="ignore", creationflags=subprocess.CREATE_NO_WINDOW)
+        proc = subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
         
-        extracted_text = (proc.stdout or "").strip()
+        stdout_data, stderr_data = proc.communicate(input=ps_script + "\n" + base64_data + "\n")
+        extracted_text = (stdout_data or "").strip()
+
         if proc.returncode != 0 or not extracted_text:
             show_ai_window("截圖 OCR", "（畫面區域）", "⚠️ 未偵測到清晰文字。")
+            show_osd("⚠️ 辨識不到文字", auto_hide=True)
             return
 
-        set_status("✨ Groq AI 繁中翻譯中...", "#C678DD")
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {"model": MODEL_SELECTION, "messages": [{"role": "system", "content": "請將以下文字翻譯為繁體中文。"}, {"role": "user", "content": f"請翻譯：\n{extracted_text}"}], "temperature": 0.2}
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=12)
-        if resp.status_code == 200:
-            raw = resp.json()["choices"][0]["message"]["content"].strip()
-            if "</think>" in raw: raw = raw.split("</think>")[-1].strip()
-            res = to_tw_trad(raw)
-            add_history_entry("截圖 OCR 翻譯", extracted_text, res)
-            show_ai_window("截圖 OCR 翻譯", f"【辨識原文】\n{extracted_text}", res)
+        set_status("✨ 雙引擎 AI 繁中翻譯中...", "#C678DD")
+        show_osd("✨ AI 翻譯中...", auto_hide=False)
+        success, result = _execute_unified_chat([{"role": "system", "content": "請將以下文字翻譯為繁體中文。"}, {"role": "user", "content": f"請翻譯：\n{extracted_text}"}], MODEL_SELECTION, 0.2, 12)
+        if success:
+            add_history_entry("截圖 OCR 翻譯", extracted_text, result)
+            show_ai_window("截圖 OCR 翻譯", f"【辨識原文】\n{extracted_text}", result)
+            show_osd("✅ OCR 翻譯完成", auto_hide=True)
         else:
-            trigger_cdn_error_modal(f"OCR 翻譯 API 錯誤 HTTP {resp.status_code}", resp.text[:200])
+            trigger_cdn_error_modal("OCR 翻譯 API 錯誤", result)
+            show_osd("❌ OCR 翻譯失敗", auto_hide=True)
     except Exception as e:
         trigger_cdn_error_modal("截圖處理例外錯誤", traceback.format_exc())
+        show_osd("❌ 截圖處理例外", auto_hide=True)
     finally:
-        is_processing = False
+        with state_lock:
+            is_processing = False
         hide_status()
 
 def process_selection(mode):
     global is_processing
-    if not GROQ_API_KEY: prompt_api_key_gui(); return
+    if not GROQ_API_KEY and not GEMINI_API_KEY: prompt_api_key_gui(); return
 
-    is_processing = True
+    with state_lock:
+        if is_processing:
+            set_status("⏳ 系統處理中，請稍候...", "#E5C07B")
+            root.after(1500, hide_status)
+            return
+        is_processing = True
+
     set_status("📋 取得選取文字中...", "#61AFEF")
     try:
         send_copy()
-        time.sleep(0.15)
-        text = pyperclip.paste().strip()
+        text = safe_clipboard_paste().strip()
         if not text:
             set_status("⚠️ 未選取任何文字", "#E5C07B")
+            show_osd("⚠️ 未選取文字", auto_hide=True)
             root.after(1500, hide_status); return
 
         set_status("✨ AI 處理選取文字中...", "#C678DD")
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
         
         if mode == "translate": sys_prompt = "請將以下文字精準翻譯為流暢繁體中文。"; title = "劃詞翻譯"
         elif mode == "ai_refine": sys_prompt = "請將以下文字進行潤飾與精簡摘要。"; title = "AI 潤飾摘要"
@@ -1407,44 +1677,48 @@ def process_selection(mode):
         elif mode == "replace": sys_prompt = "請修正語法並優化以下文字，直接輸出優化後的繁體中文。"; title = "劃詞原地替換"
         else: sys_prompt = "請優化以下文字。"; title = "AI 處理"
 
-        payload = {"model": MODEL_SELECTION, "messages": [{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}], "temperature": 0.2}
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=12)
-        if resp.status_code == 200:
-            raw = resp.json()["choices"][0]["message"]["content"].strip()
-            if "</think>" in raw: raw = raw.split("</think>")[-1].strip()
-            res = to_tw_trad(raw)
-            
+        show_osd(f"⏳ {title} 處理中...", auto_hide=False)
+
+        success, result = _execute_unified_chat([{"role": "system", "content": sys_prompt}, {"role": "user", "content": text}], MODEL_SELECTION, 0.2, 12)
+        if success:
             if mode == "replace":
-                pyperclip.copy(res); time.sleep(0.05); send_paste()
+                safe_clipboard_copy(result); time.sleep(0.05); send_paste()
                 set_status("✨ 替換完成並已貼上！", "#98C379")
+                show_osd("✅ 替換完成，已貼上", auto_hide=True)
             else:
-                add_history_entry(title, text, res)
-                show_ai_window(title, text, res)
+                add_history_entry(title, text, result)
+                show_ai_window(title, text, result)
+                show_osd(f"✅ {title} 完成", auto_hide=True)
         else:
-            trigger_cdn_error_modal(f"劃詞處理 API 錯誤 HTTP {resp.status_code}", resp.text[:200])
+            trigger_cdn_error_modal("劃詞處理 API 錯誤", result)
+            show_osd("❌ AI 處理失敗", auto_hide=True)
     except Exception as e:
         trigger_cdn_error_modal("劃詞處理例外錯誤", traceback.format_exc())
+        show_osd("❌ 處理發生例外", auto_hide=True)
     finally:
-        is_processing = False
+        with state_lock:
+            is_processing = False
         hide_status()
 
 def process_tts():
     if not TTS_AVAILABLE:
         set_status("⚠️ 未安裝 pyttsx3 語音套件", "#E5C07B")
+        show_osd("⚠️ 缺少 TTS 模組", auto_hide=True)
         root.after(1500, hide_status); return
     try:
         send_copy()
-        time.sleep(0.15)
-        text = pyperclip.paste().strip()
+        text = safe_clipboard_paste().strip()
         if not text: return
         
         def tts_worker():
             engine = pyttsx3.init()
             engine.say(text)
             engine.runAndWait()
+            show_osd("✅ 朗讀結束", auto_hide=True)
             
         threading.Thread(target=tts_worker, daemon=True).start()
         set_status("🔊 正在朗讀文字...", "#98C379")
+        show_osd("🔊 正在朗讀...", auto_hide=False)
         root.after(1500, hide_status)
     except Exception as e:
         trigger_cdn_error_modal("TTS 語音朗讀例外", traceback.format_exc())
@@ -1453,7 +1727,7 @@ unified_center_win = None
 is_settings_locked = True
 
 def prompt_api_key_gui(default_tab_idx=0):
-    global unified_center_win, GROQ_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE, MODEL_VOICE, MODEL_CHAT, MODEL_SELECTION, is_settings_locked
+    global unified_center_win, GROQ_API_KEY, GEMINI_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE, MODEL_VOICE, MODEL_CHAT, MODEL_SELECTION, is_settings_locked
     if unified_center_win is not None:
         try:
             unified_center_win.deiconify()
@@ -1467,14 +1741,14 @@ def prompt_api_key_gui(default_tab_idx=0):
 
     theme = get_theme()
     win = tk.Toplevel(root)
-    win.title(f"🚀 Groq AI 控制中心 ({CURRENT_VERSION})")
+    win.title(f"🚀 Groq & Gemini 控制中心 ({CURRENT_VERSION})")
     
     win.geometry(f"920x820+{(root.winfo_screenwidth()-920)//2}+{(root.winfo_screenheight()-820)//2}")
     win.configure(bg=theme["card_bg"])
 
     header = tk.Frame(win, bg=theme["card_bg"])
     header.pack(fill="x", padx=20, pady=(12, 6))
-    tk.Label(header, text="⚙️ Groq AI 系統控制中心", font=("Microsoft JhengHei", sf(14), "bold"), fg=theme["accent"], bg=theme["card_bg"]).pack(side="left")
+    tk.Label(header, text="⚙️ 系統控制中心", font=("Microsoft JhengHei", sf(14), "bold"), fg=theme["accent"], bg=theme["card_bg"]).pack(side="left")
     
     tk.Button(header, text="🔄 檢查雲端軟體更新", command=lambda: check_for_updates(manual=True), bg="#56B6C2", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=8, pady=2).pack(side="right", padx=(8, 0))
     tk.Button(header, text="💬 開啟 Discord 私訊作者", command=open_discord_profile, bg="#5865F2", fg="white", font=("Microsoft JhengHei", sf(9), "bold"), relief="flat", padx=8, pady=2).pack(side="right", padx=(8, 0))
@@ -1490,6 +1764,7 @@ def prompt_api_key_gui(default_tab_idx=0):
     notebook.pack(fill="both", expand=True, padx=20, pady=4)
     win.notebook_ref = notebook
 
+    # 🌟 實作全域滑鼠滾輪攔截與穿透 (v7.6.0)
     def create_scrollable_tab(tab_name):
         container = tk.Frame(notebook, bg=theme["inner_bg"])
         canvas = tk.Canvas(container, bg=theme["inner_bg"], highlightthickness=0)
@@ -1499,8 +1774,22 @@ def prompt_api_key_gui(default_tab_idx=0):
         canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.bind('<Configure>', lambda e: canvas.itemconfig(canvas_window, width=e.width))
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         notebook.add(container, text=tab_name)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        container.bind("<Enter>", _bind_mousewheel)
+        container.bind("<Leave>", _unbind_mousewheel)
+
         return scrollable_frame
 
     def add_feedback_card(parent_frame):
@@ -1549,17 +1838,17 @@ def prompt_api_key_gui(default_tab_idx=0):
 
     # 📌 2. 核心技術與使用技巧
     tab_tips = create_scrollable_tab("💡 核心技術與小技巧")
-    tk.Label(tab_tips, text="🛠️ 本軟體底層 7 大核心架構與技術解析：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
+    tk.Label(tab_tips, text="🛠️ 本軟體底層核心架構與技術解析：", font=("Microsoft JhengHei", sf(11), "bold"), fg="#61AFEF", bg=theme["inner_bg"]).pack(anchor="w", pady=(2, 8))
     
     core_tech_list = [
         ("🎙️ 1. 高精準語音聽寫引擎 (Whisper + LLM 雙引擎)", 
          "底層透過 `sounddevice` 以 16kHz 採集聲波，打包送往 Groq API 進行 Whisper-large-v3 語音辨識；隨後自動流轉至 LLM 進行同音字修復與全形標點補齊，再透過 Win32 API 模擬貼上。"),
         
         ("⌨️ 2. Win32 全域熱鍵與鍵盤模擬引擎", 
-         "使用 `ctypes` 直接對接 Windows `user32.dll` (`RegisterHotKey` / `GetMessageW`) 在背景高效率捕捉全域快捷鍵；並運用 `keybd_event` 實現非侵入式的選取文字複製與原地覆蓋貼上。"),
+         "使用 `ctypes` 直接對接 Windows `user32.dll` (`RegisterHotKey` / `GetMessageW`) 在背景高效率捕捉全域快捷鍵；並運用 `SendInput` 結構體實現非侵入式與極高相容性的選取文字複製與原地覆蓋貼上。"),
 
-        ("🖼️ 3. Windows 原生免安裝 OCR 與單例截圖鎖定", 
-         "繪製 Tkinter 透明全螢幕遮罩進行區域截圖，具備單例鎖定機制 (Win+Shift+S 風格) 防止重複觸發黑屏；底層調用 Windows 10/11 原生 `Windows.Media.Ocr` PowerShell API 辨識文字。"),
+        ("🖼️ 3. Windows 記憶體管線 OCR 與單例截圖鎖定", 
+         "繪製 Tkinter 透明全螢幕遮罩進行區域截圖，具備單例鎖定機制 (Win+Shift+S 風格) 防止重複觸發黑屏；底層透過 Base64 與 stdin 管線將截圖送入 PowerShell `InMemoryRandomAccessStream` 進行無硬碟 I/O 辨識。"),
 
         ("🌐 4. 實時 RAG 智慧檢索與聊天門檻機制", 
          "對話模組具備智慧意圖過濾，日常打招呼不打擾；僅在問題需要時發送 Tavily 檢索，精準將 Context 注入 Prompt 徹底消弭 AI 幻覺。"),
@@ -1567,11 +1856,8 @@ def prompt_api_key_gui(default_tab_idx=0):
         ("🛠️ 5. 靜默全自動自我修復引擎 (Auto Self-Healing)", 
          "當系統捕捉到未預期的 Exception/Error 時，背景觸發 `auto_execute_system_repair()` 自動執行清理 PowerShell 處理序、釋放 Socket 連線與變數重設，並由 AI 背景產生診斷報告。"),
 
-        ("🔄 6. 雲端 API 廣播與自動熱更新機制", 
-         "啟動時透過 `fetch_remote_broadcast()` 抓取 GitHub 雲端 JSON 廣播；並透過 `check_for_updates()` 進行版本比對，自動下載新版並產生 `.bat` 批次檔執行 `.exe` 的無縫覆蓋與重啟。"),
-
-        ("🎨 7. iPhone 風格懸浮球與 DWM 深色 UI", 
-         "採用 `pystray` 托盤控制與 AssistiveTouch 懸浮小球設計，具備自動透明度變化與動態選單；並呼叫 `dwmapi.dll` 實現 Windows 原生視窗深色標題列與 DPI 字體銳利化。")
+        ("🎨 6. 狀態持久化 OSD 系統與無焦點保護", 
+         "提供高可見度、淡出動畫的 OSD 提示窗，支援長時間任務持久化顯示；具備 Win32 滑鼠穿透與無焦點保護，確保打機時絕不搶奪焦點或造成滑鼠失靈。")
     ]
 
     for t_title, t_desc in core_tech_list:
@@ -1587,13 +1873,13 @@ def prompt_api_key_gui(default_tab_idx=0):
     tk.Label(ver_card, text=f"📌 本地電腦先前安裝紀錄版本：{LOCAL_PREVIOUS_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E06C75", bg=theme["widget_bg"]).pack(anchor="w")
     tk.Label(ver_card, text=f"✨ 當前系統升級執行版本：{CURRENT_VERSION}", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w", pady=(2, 0))
 
-    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.2.7 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
+    tk.Label(tab_ver, text="🔍 相較於您本地電腦的歷史舊版，v7.6.0 帶來的重要改進：", font=("Microsoft JhengHei", sf(10), "bold"), fg=theme["accent"], bg=theme["inner_bg"]).pack(anchor="w", pady=(6, 4))
 
     diff_items = [
-        ("SemVer 語意化版本管理規範升級", "遵循 vX.Y.Z 標準語意化版本發布流程，完善版本號管理與自動熱更新對接。", "確保系統元件與更新檔比對順暢，降低版本混淆與更新異常風險。"),
-        ("修復連按快捷鍵畫面疊加變黑 BUG (Win+Shift+S 模式)", "加入單例截圖鎖定機制 (`snip_active`) 與頂部動態提示列，連續按下 Alt+X 不再重複建立遮罩導致畫面變暗。", "解決重複觸發畫面過暗的問題，提供清晰明確的截圖狀態提示。"),
-        ("智慧過濾對話搜尋門檻", "加入打招呼與日常閒聊語意過濾，避免發送「哈囉」時被 Tavily 誤抓歌曲資料庫打擾。", "讓聊天對話更加自然親切、不再莫名吐出大篇幅無關資料。"),
-        ("升級對話視窗語音輸入引擎", "將對話視窗內的「🎙️ 語音輸入」補齊 LLM 精修校對邏輯，達到與 Alt+S 完全相同的聽寫智慧度。", "語音轉文字精準度顯著升級，自動校對同音字與補齊全形標點。")
+        ("Google Gemini 原生雙引擎矩陣導入", "在核心 API 抽象層加入對 `gemini-1.5-flash`, `gemini-1.5-pro` 的支援，動態解析模型前綴發送至 Google API 端點。", "提供多雲容錯與模型備援能力，再也不怕單一供應商斷線或額度耗盡，且零套件安裝相依。"),
+        ("OSD 視覺回饋狀態機持久化 (Stateful OSD)", "重構 `show_osd` 支援 `auto_hide=False` 參數，讓系統在執行耗時任務（如 AI 思考、語音辨識）時，OSD 提示會持續懸浮在螢幕中央不消失。", "極大化系統狀態可視性，給予使用者明確的操作進度與安全感。"),
+        ("Tkinter 畫布全域滾輪綁定 (Global MouseWheel Hook)", "利用 `<Enter>` / `<Leave>` 動態攔截並重新映射 `<MouseWheel>` 系統事件至 `canvas.yview_scroll`。", "擺脫必須精準把滑鼠移至拉桿才能滑動的限制，實現「指到哪、滑到哪」的現代化流暢手感。"),
+        ("核心 API 呼叫結構重構 (DRY 原則)", "抽象化 `_execute_unified_chat` 核心通訊函式，集中處理所有 Groq 與 Gemini API 請求。", "消除大量重複的樣板代碼 (Boilerplate)，提升效能與維護性。")
     ]
 
     for item_title, item_detail, item_benefit in diff_items:
@@ -1627,11 +1913,22 @@ def prompt_api_key_gui(default_tab_idx=0):
     hist_canvas_window = hist_canvas.create_window((0, 0), window=hist_scrollable_frame, anchor="nw")
     hist_canvas.configure(yscrollcommand=hist_scrollbar.set)
     hist_canvas.bind('<Configure>', lambda e: hist_canvas.itemconfig(hist_canvas_window, width=e.width))
-    hist_canvas.pack(side="left", fill="both", expand=True); hist_scrollbar.pack(side="right", fill="y")
+    hist_canvas.pack(side="left", fill="both", expand=True)
+    hist_scrollbar.pack(side="right", fill="y")
+    
+    def _hist_mousewheel(event):
+        hist_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    def _bind_hist_mw(e):
+        hist_canvas.bind_all("<MouseWheel>", _hist_mousewheel)
+    def _unbind_hist_mw(e):
+        hist_canvas.unbind_all("<MouseWheel>")
+    hist_container.bind("<Enter>", _bind_hist_mw)
+    hist_container.bind("<Leave>", _unbind_hist_mw)
 
     def refresh_history_tab_ui():
         for widget in hist_scrollable_frame.winfo_children(): widget.destroy()
-        history_data = load_history()
+        with history_lock:
+            history_data = load_history()
         if not history_data:
             tk.Label(hist_scrollable_frame, text="（目前尚無任何歷史紀錄）", font=("Microsoft JhengHei", sf(11)), fg=theme["widget_fg"], bg=theme["inner_bg"]).pack(pady=40, padx=20)
         else:
@@ -1651,23 +1948,17 @@ def prompt_api_key_gui(default_tab_idx=0):
 
     def manual_clear_history_tab():
         if messagebox.askyesno("確認清除", "確定要清空所有對話歷史紀錄嗎？", parent=win):
-            save_history([])
+            with history_lock:
+                save_history([])
             refresh_history_tab_ui()
-            set_status("🧹 歷史紀錄已清空", "#98C379"); root.after(1500, hide_status)
+            set_status("🧹 歷史紀錄已清空", "#98C379")
+            show_osd("🧹 歷史紀錄已清空", auto_hide=True)
+            root.after(1500, hide_status)
 
     tk.Button(hist_btn_frame, text="🗑️ 清空所有歷史紀錄", command=manual_clear_history_tab, bg="#E06C75", fg="white", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=12, pady=6).pack(side="left")
 
     # 📌 5. 系統設定
-    tab_settings_container = tk.Frame(notebook, bg=theme["inner_bg"])
-    notebook.add(tab_settings_container, text="⚙️ 系統設定")
-    canvas_s = tk.Canvas(tab_settings_container, bg=theme["inner_bg"], highlightthickness=0)
-    scrollbar_s = ttk.Scrollbar(tab_settings_container, orient="vertical", command=canvas_s.yview)
-    tab_settings = tk.Frame(canvas_s, bg=theme["inner_bg"], padx=20, pady=15)
-    tab_settings.bind("<Configure>", lambda e: canvas_s.configure(scrollregion=canvas_s.bbox("all")))
-    canvas_s_window = canvas_s.create_window((0, 0), window=tab_settings, anchor="nw")
-    canvas_s.configure(yscrollcommand=scrollbar_s.set)
-    canvas_s.bind('<Configure>', lambda e: canvas_s.itemconfig(canvas_s_window, width=e.width))
-    canvas_s.pack(side="left", fill="both", expand=True); scrollbar_s.pack(side="right", fill="y")
+    tab_settings = create_scrollable_tab("⚙️ 系統設定")
 
     # 設定鎖控制橫幅
     lock_bar = tk.Frame(tab_settings, bg=theme["widget_bg"], padx=10, pady=8, bd=1, relief="solid")
@@ -1689,11 +1980,12 @@ def prompt_api_key_gui(default_tab_idx=0):
     guide_card = tk.Frame(tab_settings, bg=theme["widget_bg"], bd=1, relief="solid", padx=12, pady=10)
     guide_card.pack(fill="x", pady=(0, 10))
     tk.Label(guide_card, text="💡 取得 免費 API Key：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#98C379", bg=theme["widget_bg"]).pack(anchor="w")
-    tk.Label(guide_card, text="1. Groq API：至 console.groq.com 免費申請 (gsk_...)。\n2. Tavily Search API：至 tavily.com 註冊免費取得 (tvly-...)。", font=("Microsoft JhengHei", sf(10)), fg=theme["widget_fg"], bg=theme["widget_bg"], justify="left").pack(anchor="w", pady=(2, 6))
+    tk.Label(guide_card, text="1. Groq API：至 console.groq.com 申請極速模型。\n2. Google Gemini API：至 aistudio.google.com 申請強大推理模型。\n3. Tavily Search API：至 tavily.com 註冊免費取得。", font=("Microsoft JhengHei", sf(10)), fg=theme["widget_fg"], bg=theme["widget_bg"], justify="left").pack(anchor="w", pady=(2, 6))
 
     btn_f_urls = tk.Frame(guide_card, bg=theme["widget_bg"])
     btn_f_urls.pack(anchor="w")
     tk.Button(btn_f_urls, text="🌐 開啟 Groq 官網", command=lambda: webbrowser.open("https://console.groq.com/"), bg="#61AFEF", fg="#21252B", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=8, pady=2).pack(side="left", padx=(0, 6))
+    tk.Button(btn_f_urls, text="🧠 開啟 Gemini 官網", command=lambda: webbrowser.open("https://aistudio.google.com/app/apikey"), bg="#C678DD", fg="#21252B", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=8, pady=2).pack(side="left", padx=(0, 6))
     tk.Button(btn_f_urls, text="🔍 開啟 Tavily 官網", command=lambda: webbrowser.open("https://tavily.com/"), bg="#E5C07B", fg="#21252B", font=("Microsoft JhengHei", sf(10), "bold"), relief="flat", padx=8, pady=2).pack(side="left")
 
     autostart_var = tk.BooleanVar(value=config.get("autostart", True))
@@ -1752,6 +2044,11 @@ def prompt_api_key_gui(default_tab_idx=0):
     entry_api.pack(fill="x", anchor="w", pady=(0, 8), ipady=3)
     if GROQ_API_KEY: entry_api.insert(0, GROQ_API_KEY)
 
+    tk.Label(tab_settings, text="🔑 Google Gemini API Key：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#C678DD", bg=theme["inner_bg"]).pack(anchor="w", pady=(4, 2))
+    entry_gemini = tk.Entry(tab_settings, font=("Consolas", sf(11)), show="*")
+    entry_gemini.pack(fill="x", anchor="w", pady=(0, 8), ipady=3)
+    if GEMINI_API_KEY: entry_gemini.insert(0, GEMINI_API_KEY)
+
     tk.Label(tab_settings, text="🌐 Tavily Search API Key (實現即時精準查證)：", font=("Microsoft JhengHei", sf(10), "bold"), fg="#E5C07B", bg=theme["inner_bg"]).pack(anchor="w", pady=(4, 2))
     entry_tavily = tk.Entry(tab_settings, font=("Consolas", sf(11)), show="*")
     entry_tavily.pack(fill="x", anchor="w", pady=(0, 8), ipady=3)
@@ -1768,20 +2065,23 @@ def prompt_api_key_gui(default_tab_idx=0):
     entry_p2.insert(0, CUSTOM_PROMPT_2)
 
     def save_settings():
-        global GROQ_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE, MODEL_VOICE, MODEL_CHAT, MODEL_SELECTION, is_settings_locked
+        global GROQ_API_KEY, GEMINI_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE, MODEL_VOICE, MODEL_CHAT, MODEL_SELECTION, is_settings_locked
         key = entry_api.get().strip()
+        gemini_key = entry_gemini.get().strip()
         t_key = entry_tavily.get().strip()
-        if key:
+        
+        if key or gemini_key:
             MODEL_VOICE = combo_v.get().split(" ")[0]
             MODEL_CHAT = combo_c.get().split(" ")[0]
             MODEL_SELECTION = combo_s.get().split(" ")[0]
             selected_scale = SCALE_OPTIONS.get(scale_combo.get(), 1.35)
             
-            GROQ_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE = key, t_key, entry_p1.get().strip(), entry_p2.get().strip(), theme_combo.get(), selected_scale
+            GROQ_API_KEY, GEMINI_API_KEY, TAVILY_API_KEY, CUSTOM_PROMPT_1, CUSTOM_PROMPT_2, CURRENT_THEME_NAME, FONT_SCALE = key, gemini_key, t_key, entry_p1.get().strip(), entry_p2.get().strip(), theme_combo.get(), selected_scale
             set_autostart(autostart_var.get())
             
             save_config({
                 "groq_api_key": key,
+                "gemini_api_key": gemini_key,
                 "tavily_api_key": t_key,
                 "custom_prompt_1": CUSTOM_PROMPT_1,
                 "custom_prompt_2": CUSTOM_PROMPT_2,
@@ -1799,7 +2099,7 @@ def prompt_api_key_gui(default_tab_idx=0):
             win.destroy()
             refresh_floating_widget()
         else:
-            messagebox.showwarning("提示", "Groq API Key 不能為空！", parent=win)
+            messagebox.showwarning("提示", "至少需填入一個 Groq 或 Gemini API Key！", parent=win)
 
     btn_save = tk.Button(tab_settings, text="💾 儲存並套用設定", command=save_settings, bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(11), "bold"), relief="flat", padx=16, pady=8)
     btn_save.pack(pady=15)
@@ -1822,6 +2122,7 @@ def prompt_api_key_gui(default_tab_idx=0):
 
         chk_autostart.config(state=state_str)
         entry_api.config(state=state_str)
+        entry_gemini.config(state=state_str)
         entry_tavily.config(state=state_str)
         entry_p1.config(state=state_str)
         entry_p2.config(state=state_str)
@@ -1838,12 +2139,12 @@ def prompt_api_key_gui(default_tab_idx=0):
     
     trouble_shooting_list = [
         ("HTTP 401 Unauthorized / Invalid API Key", 
-         "【問題原因】：輸入的 Groq API Key 不正確、過期或包含空格。\n"
-         "【自主排除步驟】：前往「系統設定」點擊「🔓 解鎖設定」，重新貼上 console.groq.com 產生的正確 API Key (gsk_...) 並儲存。"),
+         "【問題原因】：輸入的 Groq/Gemini API Key 不正確、過期或包含空格。\n"
+         "【自主排除步驟】：前往「系統設定」點擊「🔓 解鎖設定」，重新貼上平台產生的正確 API Key 並儲存。"),
         
         ("HTTP 429 Rate Limit Exceeded", 
-         "【問題原因】：觸發 Groq 免費帳號每日 Token 額度上限。\n"
-         "【自主排除步驟】：系統會自動平滑切換至備用模型；若全數額度用盡請休息 15 分鐘再試。"),
+         "【問題原因】：觸發免費帳號每日 Token 額度上限。\n"
+         "【自主排除步驟】：由於 v7.6.0 支援雙引擎，您可以填入另一家的 API Key 讓系統自動容錯備援。"),
 
         ("AI 人物或時事回答不準確 (幻覺問題)", 
          "【問題原因】：舊版爬蟲抓取資訊破碎或 AI 憑記憶猜測。\n"
@@ -1896,7 +2197,7 @@ def show_ai_window_gui(title, original_text, result_text):
 
     btn_frame = tk.Frame(win, bg=theme["card_bg"])
     btn_frame.pack(fill="x", padx=10, pady=8)
-    tk.Button(btn_frame, text="複製結果並關閉", command=lambda: [pyperclip.copy(result_text), win.destroy(), globals().update(ai_result_win=None)], bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold")).pack(side="right")
+    tk.Button(btn_frame, text="複製結果並關閉", command=lambda: [safe_clipboard_copy(result_text), win.destroy(), globals().update(ai_result_win=None)], bg="#4CAF50", fg="white", font=("Microsoft JhengHei", sf(10), "bold")).pack(side="right")
     tk.Button(btn_frame, text="關閉 (Esc)", command=lambda: [win.destroy(), globals().update(ai_result_win=None)], bg=theme["btn_bg"], fg=theme["widget_fg"], font=("Microsoft JhengHei", sf(10), "bold")).pack(side="right", padx=5)
     win.bind("<Escape>", lambda e: [win.destroy(), globals().update(ai_result_win=None)])
     
@@ -1910,20 +2211,44 @@ def win32_hotkey_loop():
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         if msg.message == 0x0312:
             hk_id = msg.wParam
-            if hk_id == 12: toggle_pause_mode(); continue
+            if hk_id == 12: 
+                toggle_pause_mode()
+                continue
             if is_paused: continue
-            if hk_id == 8: root.after(0, lambda: SnippingTool())
-            elif hk_id == 4: threading.Thread(target=process_selection, args=("replace",), daemon=True).start()
-            elif hk_id == 2: trigger_mode("en")
-            elif hk_id == 3: threading.Thread(target=process_selection, args=("translate",), daemon=True).start()
-            elif hk_id == 1: trigger_mode("zh")
-            elif hk_id == 5: threading.Thread(target=process_selection, args=("ai_refine",), daemon=True).start()
-            elif hk_id == 9: threading.Thread(target=process_selection, args=("custom_1",), daemon=True).start()
-            elif hk_id == 10: threading.Thread(target=process_selection, args=("custom_2",), daemon=True).start()
-            elif hk_id == 11: threading.Thread(target=process_tts, daemon=True).start()
-            elif hk_id == 13: toggle_chat_panel()
-            elif hk_id == 6: prompt_api_key_gui()
-            elif hk_id == 7: threading.Thread(target=exit_program, daemon=True).start()
+            
+            if hk_id == 8: 
+                show_osd("📸 截圖 OCR 辨識", auto_hide=False)
+                root.after(0, lambda: SnippingTool())
+            elif hk_id == 4: 
+                show_osd("✏️ 劃詞原地替換", auto_hide=False)
+                threading.Thread(target=process_selection, args=("replace",), daemon=True).start()
+            elif hk_id == 2: 
+                trigger_mode("en")
+            elif hk_id == 3: 
+                show_osd("🔍 劃詞翻譯", auto_hide=False)
+                threading.Thread(target=process_selection, args=("translate",), daemon=True).start()
+            elif hk_id == 1: 
+                trigger_mode("zh")
+            elif hk_id == 5: 
+                show_osd("✨ AI 潤飾摘要", auto_hide=False)
+                threading.Thread(target=process_selection, args=("ai_refine",), daemon=True).start()
+            elif hk_id == 9: 
+                show_osd("🎯 自訂提示 1", auto_hide=False)
+                threading.Thread(target=process_selection, args=("custom_1",), daemon=True).start()
+            elif hk_id == 10: 
+                show_osd("🎯 自訂提示 2", auto_hide=False)
+                threading.Thread(target=process_selection, args=("custom_2",), daemon=True).start()
+            elif hk_id == 11: 
+                show_osd("🔊 語音朗讀 (TTS)", auto_hide=False)
+                threading.Thread(target=process_tts, daemon=True).start()
+            elif hk_id == 13: 
+                show_osd("💬 實時對話面板", auto_hide=True)
+                toggle_chat_panel()
+            elif hk_id == 6: 
+                show_osd("⚙️ 系統控制中心", auto_hide=True)
+                prompt_api_key_gui()
+            elif hk_id == 7: 
+                threading.Thread(target=exit_program, daemon=True).start()
         user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
 
 if __name__ == "__main__":
